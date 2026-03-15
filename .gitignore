@@ -1,0 +1,7 @@
+.DS_Store
+
+reviewer-agent/
+
+social-agent/.openclaw/
+social-agent/memory/
+social-agent/reports/hourly/
