@@ -5,9 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from p1_core.cli import operator_approvals, operator_report, operator_state, operator_status
+from p1_core.cli import operator_action, operator_approvals, operator_observe, operator_report, operator_state, operator_status
+from p1_core.core.chat_agent import ChatAgent
+from p1_core.core.conversation_store import ConversationStore
 from p1_core.core.governance_store import GovernanceStore
 from p1_core.core.policy_store import PolicyStore
+from p1_core.core.world_store import WorldStore
 
 
 class OperatorCliTests(unittest.TestCase):
@@ -95,6 +98,35 @@ class OperatorCliTests(unittest.TestCase):
             )
             payload = operator_report(root, kind="health")
             self.assertEqual(payload["status"], "ok")
+
+    def test_operator_observe_and_action_write_world_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            observation = operator_observe(root, text="tool execution failed during search")
+            action = operator_action(root, kind="note", payload="queue bounded follow-up")
+            payload = operator_state(root)
+            self.assertEqual(observation["source"], "operator")
+            self.assertEqual(action["status"], "queued")
+            self.assertEqual(len(payload["worldState"]["observations"]), 1)
+            self.assertEqual(len(payload["worldState"]["actionRequests"]), 1)
+
+    def test_chat_agent_records_conversation(self) -> None:
+        class FakeTextClient:
+            def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+                return "P1 response"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            agent = ChatAgent(
+                llm_client=FakeTextClient(),
+                conversation_store=ConversationStore(root / "state" / "conversation"),
+                governance_store=GovernanceStore(root / "state" / "governance"),
+                world_store=WorldStore(root / "state" / "world"),
+            )
+            payload = agent.reply("hello")
+            state = operator_state(root)
+            self.assertEqual(payload["reply"], "P1 response")
+            self.assertEqual(len(state["recentConversation"]), 2)
 
 
 if __name__ == "__main__":

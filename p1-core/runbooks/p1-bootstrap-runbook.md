@@ -25,6 +25,9 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
    - `python3 -m p1_core.cli approvals`
    - `python3 -m p1_core.cli state`
    - `python3 -m p1_core.cli ingest --model qwen3:4b-instruct --input-text "example observation"`
+   - `python3 -m p1_core.cli chat --model qwen3:4b-instruct --message "What do you think about the latest state?"`
+   - `python3 -m p1_core.cli observe --text "A tool run failed during retrieval."`
+   - `python3 -m p1_core.cli action --kind note --payload "prepare a bounded follow-up action"`
 8. Run the operator-surface integration check when changing lifecycle code.
    - `python3 -m unittest tests.test_end_to_end -v`
    - This now covers policy rollback and proposal rollback visibility through the operator CLI.
@@ -34,6 +37,8 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 10. Confirm bounded autonomous actions when low-risk proposals are promoted.
    - inspect `state/experiments/actions/`
    - inspect `state/experiments/latest-experiment.json`
+11. Inspect long-horizon governance feedback when rerun deferrals accumulate.
+   - inspect `state/governance/latest-governance.json`
 
 ## Verified outputs after growth loop
 
@@ -59,6 +64,8 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 - policy state can be restored with `--rollback-policy-snapshot-id`
 - governance profile is read from `state/governance/latest-governance.json`
 - daily reports include short-horizon and long-horizon governance sections
+- conversation transcript is written under `state/conversation/transcript.jsonl`
+- world observations and action requests are written under `state/world/`
 
 ## Rollback
 

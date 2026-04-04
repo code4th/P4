@@ -15,6 +15,8 @@ Included in this first skeleton:
 - bootstrap scaffolder for a standalone P1 workspace
 - report writer compatible with the current `keeper_adapter` contract
 - minimal growth loop that persists candidate knowledge and proposal snapshots
+- minimal conversation surface and transcript store
+- world observation and bounded action request stores
 - minimal external core package layout
 - OpenClaw adapter boundary note
 

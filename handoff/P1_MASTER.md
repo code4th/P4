@@ -58,6 +58,8 @@ P1 is an independent growth agent with:
 - its own conversation identity in the future
 - an external core outside OpenClaw
 - access to a local LLM auxiliary brain
+- a minimal conversation surface through the external core
+- explicit world-observation and world-action interfaces
 - knowledge-state management
 - critique logs
 - operational rule change proposals
@@ -124,6 +126,8 @@ External workspace scaffolding:
 - `state/knowledge/`
 - `state/policies/`
 - `state/proposals/`
+- `state/conversation/`
+- `state/world/`
 - `state/archive/`
 - `logs/`
 
@@ -190,6 +194,9 @@ Outputs:
 - `state/governance/latest-governance.json`
 - `state/experiments/latest-experiment.json`
 - `state/experiments/actions/*.json`
+- `state/conversation/transcript.jsonl`
+- `state/world/observations.jsonl`
+- `state/world/action-requests.jsonl`
 - `state/reports/daily/*-glance.json`
 - `state/reports/daily/*-daily.json`
 - `state/health.json`
@@ -225,6 +232,8 @@ For this project, core completion means all of the following:
 - low-risk improvements can be executed autonomously
 - small experiments can be run by the core itself
 - experiment outcomes feed back into later updates
+- the agent can converse through the external core
+- the agent can observe and request bounded action toward the external world
 
 Therefore, the current state is:
 
@@ -260,6 +269,15 @@ Current operational entrypoints:
 
 7. Inspect unified external-core state
    - `python3 -m p1_core.cli state`
+
+8. Talk with P1
+   - `python3 -m p1_core.cli chat --model qwen3:4b-instruct --message "What do you think about the latest state?"`
+
+9. Record a world observation
+   - `python3 -m p1_core.cli observe --text "A tool run failed during retrieval."`
+
+10. Queue a bounded world action request
+   - `python3 -m p1_core.cli action --kind note --payload "prepare a bounded follow-up action"`
 
 Current limitation:
 
@@ -309,6 +327,8 @@ Verified in implementation:
 - prior experiment outcomes now defer reruns until reviewed
 - experiment feedback is now accumulated into long-horizon governance and can freeze low-risk autonomy after repeated rerun deferrals
 - end-to-end acceptance now covers governance feedback changing a later operator-visible decision
+- conversation transcript is persisted under `state/conversation/`
+- world observations and queued action requests are persisted under `state/world/`
 - `keeper_adapter` reads `glance / daily / approvals` from generated outputs
 
 ## 11. Remaining Work

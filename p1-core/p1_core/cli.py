@@ -5,10 +5,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from p1_core.core.chat_agent import ChatAgent
+from p1_core.core.conversation_store import ConversationStore
 from p1_core.core.governance_store import GovernanceStore
 from p1_core.core.knowledge_store import KnowledgeStore
 from p1_core.core.policy_store import PolicyStore
 from p1_core.core.proposal_store import ProposalStore
+from p1_core.core.world_store import WorldStore
 from p1_core.pipeline.growth_loop import build_loop
 from p1_core.worker.ollama_client import OllamaClient
 from p1_core.worker.service import WorkerService
@@ -73,6 +76,8 @@ def operator_state(root: Path) -> dict[str, Any]:
         "latestPolicyRuleCount": len(policy_store.latest().get("rules", [])),
         "latestGovernanceSnapshotId": governance_store.latest().get("snapshot_id"),
         "governanceProfile": governance_store.latest(),
+        "worldState": WorldStore(root / "state" / "world").latest(),
+        "recentConversation": ConversationStore(root / "state" / "conversation").recent(),
     }
 
 
@@ -98,6 +103,24 @@ def operator_rollback(root: Path, *, target: str, snapshot_id: str) -> dict[str,
     raise ValueError(f"unsupported rollback target: {target}")
 
 
+def operator_observe(root: Path, *, text: str, source: str = "operator") -> dict[str, Any]:
+    return WorldStore(root / "state" / "world").observe(text, source=source)
+
+
+def operator_action(root: Path, *, kind: str, payload: str, source: str = "operator") -> dict[str, Any]:
+    return WorldStore(root / "state" / "world").request_action(kind, payload, source=source)
+
+
+def operator_chat(root: Path, *, message: str, model: str) -> dict[str, Any]:
+    agent = ChatAgent(
+        llm_client=OllamaClient(model=model),
+        conversation_store=ConversationStore(root / "state" / "conversation"),
+        governance_store=GovernanceStore(root / "state" / "governance"),
+        world_store=WorldStore(root / "state" / "world"),
+    )
+    return agent.reply(message)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified operator CLI for the P1 external core")
     parser.add_argument("--root", default="/Users/satojunichi/.openclaw/workspace/systems/p1")
@@ -119,6 +142,19 @@ def parse_args() -> argparse.Namespace:
 
     subparsers.add_parser("state", help="Inspect the latest external-core state")
 
+    observe_parser = subparsers.add_parser("observe", help="Record an external observation for P1")
+    observe_parser.add_argument("--text", required=True)
+    observe_parser.add_argument("--source", default="operator")
+
+    action_parser = subparsers.add_parser("action", help="Queue a bounded external action request")
+    action_parser.add_argument("--kind", required=True)
+    action_parser.add_argument("--payload", required=True)
+    action_parser.add_argument("--source", default="operator")
+
+    chat_parser = subparsers.add_parser("chat", help="Talk with P1 through the external core")
+    chat_parser.add_argument("--message", required=True)
+    chat_parser.add_argument("--model", default="qwen3:4b-instruct")
+
     rollback_parser = subparsers.add_parser("rollback", help="Rollback proposal or policy state")
     rollback_parser.add_argument("--target", choices=["proposals", "policies"], required=True)
     rollback_parser.add_argument("--snapshot-id", required=True)
@@ -139,6 +175,12 @@ def main() -> None:
         payload = operator_report(root, kind=args.kind, date=args.date)
     elif args.subcommand == "state":
         payload = operator_state(root)
+    elif args.subcommand == "observe":
+        payload = operator_observe(root, text=args.text, source=args.source)
+    elif args.subcommand == "action":
+        payload = operator_action(root, kind=args.kind, payload=args.payload, source=args.source)
+    elif args.subcommand == "chat":
+        payload = operator_chat(root, message=args.message, model=args.model)
     else:
         payload = operator_rollback(root, target=args.target, snapshot_id=args.snapshot_id)
 

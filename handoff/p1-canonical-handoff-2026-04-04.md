@@ -136,6 +136,8 @@ OpenClaw 内部生成に依存せず、外部から P1 workspace を生成する
 - `state/knowledge/`
 - `state/policies/`
 - `state/proposals/`
+- `state/conversation/`
+- `state/world/`
 - `state/archive/`
 - `logs/`
 
@@ -288,6 +290,9 @@ python3 -m p1_core.cli status
 python3 -m p1_core.cli approvals
 python3 -m p1_core.cli state
 python3 -m p1_core.cli ingest --model qwen3:4b-instruct --input-text "example observation"
+python3 -m p1_core.cli chat --model qwen3:4b-instruct --message "What do you think about the latest state?"
+python3 -m p1_core.cli observe --text "A tool run failed during retrieval."
+python3 -m p1_core.cli action --kind note --payload "prepare a bounded follow-up action"
 python3 -m p1_core.cli rollback --target proposals --snapshot-id 2026-04-04-proposals
 python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 ```
@@ -320,6 +325,8 @@ python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 - prior experiment outcome が次回 rerun を `deferred` に戻すことを確認
 - repeated rerun deferral が governance feedback を通じて low-risk autonomy freeze へつながることを確認
 - end-to-end acceptance で governance feedback が後続の operator-visible decision を変えることを確認
+- conversation transcript が `state/conversation/transcript.jsonl` に残ることを確認
+- world observation と bounded action request が `state/world/` に残ることを確認
 - rollback 実行後に `status` が `rollback_applied` を返すことを確認
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-smoke` を使った `keeper_adapter` 読み取り成功
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-loop-smoke` を使った growth loop 出力の `keeper_adapter` 読み取り成功
