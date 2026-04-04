@@ -62,6 +62,10 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
    - this writes `agent/openclaw-config-agent-entry.json`
    - and `agent/openclaw-config-apply.md`
    - apply the patch manually so agent registration remains auditable and reversible
+17. Apply the generated patch only when you are ready to register P1 in OpenClaw.
+   - `python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1`
+   - rollback with `python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --agent-name p1 --rollback`
+   - both commands create timestamped backups by default
 
 ## Verified outputs after growth loop
 
