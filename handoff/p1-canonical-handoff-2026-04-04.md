@@ -367,7 +367,8 @@ python3 -m p1_core.cli status
 python3 -m p1_core.cli approvals
 python3 -m p1_core.cli state
 python3 -m p1_core.cli ingest --model qwen3:4b-instruct --input-text "example observation"
-python3 -m p1_core.cli chat --model qwen3:4b-instruct --message "What do you think about the latest state?"
+python3 -m p1_core.cli chat --new-session --model qwen3:4b-instruct --message "What do you think about the latest state?"
+python3 -m p1_core.cli chat --session-id session:... --message "continue that thread"
 python3 -m p1_core.cli observe --text "A tool run failed during retrieval."
 python3 -m p1_core.cli action --kind note --payload "prepare a bounded follow-up action"
 python3 -m p1_core.cli rollback --target proposals --snapshot-id 2026-04-04-proposals
@@ -383,6 +384,7 @@ python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 /Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent action --kind note --payload "review this anomaly"
 python3 -m p1_core.bootstrap.install_openclaw_agent --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1 --source-agent main
 python3 -m p1_core.bootstrap.generate_openclaw_config_patch --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1
+python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1
 ```
 
 ## 8. 検証済み事項
@@ -398,6 +400,7 @@ python3 -m p1_core.bootstrap.generate_openclaw_config_patch --openclaw-home /Use
 - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent chat --new-session` 成功
 - `install_openclaw_agent.py` で `~/.openclaw/agents/p1/` 相当の slot scaffold を外部生成できることを確認
 - `generate_openclaw_config_patch.py` で `agent/openclaw-config-agent-entry.json` を生成できることを確認
+- `apply_openclaw_config_patch.py` で `openclaw.json` に `p1` を登録し、backup を残せることを確認
 - growth loop による knowledge / proposal / report / event 生成成功
 - knowledge state の `deferred` 遷移成功
 - proposal snapshot の履歴化と比較差分生成成功

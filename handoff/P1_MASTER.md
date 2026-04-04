@@ -444,11 +444,16 @@ Current operational entrypoints:
 11. Scaffold OpenClaw-facing registration without mutating global config automatically
    - `python3 -m p1_core.bootstrap.install_openclaw_agent --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1 --source-agent main`
    - `python3 -m p1_core.bootstrap.generate_openclaw_config_patch --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1`
+12. Apply or roll back OpenClaw registration through the external bootstrap layer
+   - `python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1`
+   - `python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --agent-name p1 --rollback`
+   - timestamped backups are created before mutation
 
 Current limitation:
 
 - P1 now has a direct temporary front door through `bin/p1` and a dedicated OpenClaw-facing wrapper through `bin/p1-agent`
-- P1 can scaffold `~/.openclaw/agents/p1/` and a safe `openclaw.json` patch, but does not auto-edit global config
+- P1 can scaffold `~/.openclaw/agents/p1/` and apply or roll back `openclaw.json` registration through explicit external scripts
+- registration is still an operator action, not an internal OpenClaw self-spawn
 - OpenClaw still remains a thin control plane and should not absorb P1 judgment logic
 
 ## 9. Rollback Principles
@@ -497,6 +502,7 @@ Verified in implementation:
 - conversation transcript is persisted under `state/conversation/`
 - world observations and queued action requests are persisted under `state/world/`
 - `keeper_adapter` reads `glance / daily / approvals` from generated outputs
+- `openclaw.json` registration for `p1` can now be applied and rolled back with backup files through external bootstrap scripts
 
 ## 11. Remaining Work
 

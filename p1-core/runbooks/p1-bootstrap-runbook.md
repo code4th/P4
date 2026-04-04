@@ -26,14 +26,16 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
    - `python3 -m p1_core.cli approvals`
    - `python3 -m p1_core.cli state`
    - `python3 -m p1_core.cli ingest --model qwen3:4b-instruct --input-text "example observation"`
-   - `python3 -m p1_core.cli chat --model qwen3:4b-instruct --message "What do you think about the latest state?"`
+   - `python3 -m p1_core.cli chat --new-session --model qwen3:4b-instruct --message "What do you think about the latest state?"`
+   - `python3 -m p1_core.cli chat --session-id session:... --message "continue that thread"`
    - `python3 -m p1_core.cli observe --text "A tool run failed during retrieval."`
    - `python3 -m p1_core.cli action --kind note --payload "prepare a bounded follow-up action"`
 8. Use the OpenClaw-side P1 wrapper when you want to treat P1 as a separate individual.
-   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 status`
-   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 chat --message "hello P1"`
-   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 observe --text "operator noticed a new pattern"`
-   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 action --kind note --payload "review this anomaly"`
+   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent status`
+   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent chat --new-session --message "hello P1"`
+   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent chat --session-id session:... --message "continue"`
+   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent observe --text "operator noticed a new pattern"`
+   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent action --kind note --payload "review this anomaly"`
 9. Run the operator-surface integration check when changing lifecycle code.
    - `python3 -m unittest tests.test_end_to_end -v`
    - This now covers policy rollback and proposal rollback visibility through the operator CLI.
@@ -98,6 +100,7 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 - OpenClaw-facing agent metadata is written under `agent/manifest.json`
 - OpenClaw-facing surface guidance is written under `agent/openclaw-agent.md`
 - OpenClaw config patch guidance is written under `agent/openclaw-config-apply.md`
+- OpenClaw registration patch can be applied and rolled back with timestamped backups
 
 ## Rollback
 
