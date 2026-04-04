@@ -29,3 +29,12 @@ python3 -m p1_core.worker.ollama_worker --help
 python3 -m p1_core.bootstrap.bootstrap_p1 --help
 python3 -m p1_core.reporting.write_example_reports --root /tmp/p1-core-smoke
 ```
+
+OpenClaw-side P1 individual:
+
+```bash
+cd /Users/satojunichi/Documents/openclaw/p1-core
+python3 -m p1_core.bootstrap.bootstrap_p1 --root /Users/satojunichi/.openclaw/workspace/systems/p1 --force
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 status
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 chat --model qwen3:4b-instruct --message "hello P1"
+```

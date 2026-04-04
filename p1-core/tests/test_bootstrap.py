@@ -17,8 +17,15 @@ class BootstrapTests(unittest.TestCase):
             self.assertTrue((root / "config.json").exists())
             self.assertTrue((root / "prompt.md").exists())
             self.assertTrue((root / "runbook.md").exists())
+            self.assertTrue((root / "bin" / "p1").exists())
+            self.assertTrue((root / "bin" / "p1-worker").exists())
+            self.assertTrue((root / "state" / "conversation").exists())
+            self.assertTrue((root / "state" / "world").exists())
+            self.assertTrue((root / "state" / "governance").exists())
+            self.assertTrue((root / "state" / "experiments").exists())
             config = json.loads((root / "config.json").read_text(encoding="utf-8"))
             self.assertEqual(config["promotion_mode"], "proposal_only")
+            self.assertEqual(config["workspace_kind"], "openclaw-system-agent")
 
 
 if __name__ == "__main__":

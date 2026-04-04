@@ -14,6 +14,8 @@ TEMPLATES = {
         "control_plane": "openclaw",
     },
     "config.json": {
+        "external_core_repo": "/Users/satojunichi/Documents/openclaw/p1-core",
+        "workspace_kind": "openclaw-system-agent",
         "worker_base_url": "http://127.0.0.1:8765",
         "worker_model": "qwen3:4b-instruct",
         "worker_endpoints": ["/summarize", "/classify", "/draft_lessons"],
@@ -50,14 +52,40 @@ Rollback:
 3. Restore the previous proposal or policy snapshot.
 """
 
+BIN_P1_TEMPLATE = """#!/bin/sh
+set -eu
+
+ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="/Users/satojunichi/Documents/openclaw/p1-core"
+
+export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m p1_core.cli --root "$ROOT_DIR" "$@"
+"""
+
+BIN_P1_WORKER_TEMPLATE = """#!/bin/sh
+set -eu
+
+REPO_ROOT="/Users/satojunichi/Documents/openclaw/p1-core"
+
+export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m p1_core.worker.ollama_worker "$@"
+"""
+
 
 def scaffold_workspace(root: Path, force: bool = False) -> list[Path]:
     created: list[Path] = []
     directories = [
+        root / "bin",
         root / "state" / "reports",
+        root / "state" / "reports" / "daily",
         root / "state" / "knowledge",
+        root / "state" / "events",
         root / "state" / "policies",
         root / "state" / "proposals",
+        root / "state" / "governance",
+        root / "state" / "experiments",
+        root / "state" / "conversation",
+        root / "state" / "world",
         root / "state" / "archive",
         root / "logs",
     ]
@@ -81,6 +109,18 @@ def scaffold_workspace(root: Path, force: bool = False) -> list[Path]:
     if not runbook_path.exists() or force:
         runbook_path.write_text(RUNBOOK_TEMPLATE, encoding="utf-8")
         created.append(runbook_path)
+
+    bin_p1_path = root / "bin" / "p1"
+    if not bin_p1_path.exists() or force:
+        bin_p1_path.write_text(BIN_P1_TEMPLATE, encoding="utf-8")
+        bin_p1_path.chmod(0o755)
+        created.append(bin_p1_path)
+
+    bin_worker_path = root / "bin" / "p1-worker"
+    if not bin_worker_path.exists() or force:
+        bin_worker_path.write_text(BIN_P1_WORKER_TEMPLATE, encoding="utf-8")
+        bin_worker_path.chmod(0o755)
+        created.append(bin_worker_path)
 
     return created
 

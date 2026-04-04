@@ -134,14 +134,19 @@ OpenClaw 内部生成に依存せず、外部から P1 workspace を生成する
 
 生成対象:
 
+- `bin/p1`
+- `bin/p1-worker`
 - `profile.json`
 - `config.json`
 - `prompt.md`
 - `runbook.md`
 - `state/reports/`
 - `state/knowledge/`
+- `state/events/`
 - `state/policies/`
 - `state/proposals/`
+- `state/governance/`
+- `state/experiments/`
 - `state/conversation/`
 - `state/world/`
 - `state/archive/`
@@ -257,6 +262,8 @@ python3 -m p1_core.bootstrap.bootstrap_p1 --root /Users/satojunichi/.openclaw/wo
 ```bash
 cd /Users/satojunichi/Documents/openclaw/p1-core
 python3 -m p1_core.worker.ollama_worker --port 8765 --model qwen3:4b-instruct
+# or
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-worker --port 8765 --model qwen3:4b-instruct
 ```
 
 ### 7.4 health 確認
@@ -303,6 +310,15 @@ python3 -m p1_core.cli rollback --target proposals --snapshot-id 2026-04-04-prop
 python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 ```
 
+### 7.9 OpenClaw 上の別個体として P1 を扱う
+
+```bash
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 status
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 chat --model qwen3:4b-instruct --message "hello P1"
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 observe --text "operator noticed a new pattern"
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 action --kind note --payload "review this anomaly"
+```
+
 ## 8. 検証済み事項
 
 この turn で確認済み:
@@ -310,6 +326,10 @@ python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 - `p1-core` 単体テスト成功
 - bootstrap scaffolder による workspace 生成成功
 - example report 生成成功
+- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 status` 成功
+- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 observe` 成功
+- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 action` 成功
+- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 chat --model qwen3:4b-instruct` 成功
 - growth loop による knowledge / proposal / report / event 生成成功
 - knowledge state の `deferred` 遷移成功
 - proposal snapshot の履歴化と比較差分生成成功

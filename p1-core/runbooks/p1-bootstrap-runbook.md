@@ -11,6 +11,7 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
    - `python3 -m p1_core.bootstrap.bootstrap_p1 --root /Users/satojunichi/.openclaw/workspace/systems/p1`
 2. Start the local worker.
    - `python3 -m p1_core.worker.ollama_worker --port 8765 --model qwen3:4b-instruct`
+   - or `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-worker --port 8765 --model qwen3:4b-instruct`
 3. Verify health.
    - `curl http://127.0.0.1:8765/health`
 4. Generate initial P1 reports.
@@ -28,16 +29,21 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
    - `python3 -m p1_core.cli chat --model qwen3:4b-instruct --message "What do you think about the latest state?"`
    - `python3 -m p1_core.cli observe --text "A tool run failed during retrieval."`
    - `python3 -m p1_core.cli action --kind note --payload "prepare a bounded follow-up action"`
-8. Run the operator-surface integration check when changing lifecycle code.
+8. Use the OpenClaw-side P1 wrapper when you want to treat P1 as a separate individual.
+   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 status`
+   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 chat --message "hello P1"`
+   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 observe --text "operator noticed a new pattern"`
+   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 action --kind note --payload "review this anomaly"`
+9. Run the operator-surface integration check when changing lifecycle code.
    - `python3 -m unittest tests.test_end_to_end -v`
    - This now covers policy rollback and proposal rollback visibility through the operator CLI.
-9. Run the real local-model smoke when changing worker/model defaults.
+10. Run the real local-model smoke when changing worker/model defaults.
    - `python3 -m p1_core.cli --root /tmp/p1-real-ollama-smoke ingest --model qwen3:4b-instruct --input-text "example observation"`
    - `python3 -m p1_core.worker.ollama_worker --port 8876 --model qwen3:4b-instruct`
-10. Confirm bounded autonomous actions when low-risk proposals are promoted.
+11. Confirm bounded autonomous actions when low-risk proposals are promoted.
    - inspect `state/experiments/actions/`
    - inspect `state/experiments/latest-experiment.json`
-11. Inspect long-horizon governance feedback when rerun deferrals accumulate.
+12. Inspect long-horizon governance feedback when rerun deferrals accumulate.
    - inspect `state/governance/latest-governance.json`
 
 ## Verified outputs after growth loop

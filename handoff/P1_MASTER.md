@@ -252,6 +252,7 @@ Current operational entrypoints:
    - `cd /Users/satojunichi/Documents/openclaw`
    - `python3 -m keeper_adapter.cli status`
    - or `cd /Users/satojunichi/Documents/openclaw/p1-core && python3 -m p1_core.cli status`
+   - or `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 status`
 
 2. Read detailed report
    - `python3 -m keeper_adapter.cli report --kind daily`
@@ -276,17 +277,20 @@ Current operational entrypoints:
 
 8. Talk with P1
    - `python3 -m p1_core.cli chat --model qwen3:4b-instruct --message "What do you think about the latest state?"`
+   - or `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 chat --model qwen3:4b-instruct --message "What do you think about the latest state?"`
 
 9. Record a world observation
    - `python3 -m p1_core.cli observe --text "A tool run failed during retrieval."`
+   - or `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 observe --text "A tool run failed during retrieval."`
 
 10. Queue a bounded world action request
    - `python3 -m p1_core.cli action --kind note --payload "prepare a bounded follow-up action"`
+   - or `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 action --kind note --payload "prepare a bounded follow-up action"`
 
 Current limitation:
 
-- there is no full direct chat-style P1 operator interface yet
-- today, P1 is operated through bridge commands and growth-loop execution
+- P1 now has a direct CLI chat/operator surface through `bin/p1`
+- OpenClaw still remains a thin control plane and should not absorb P1 judgment logic
 
 ## 9. Rollback Principles
 
