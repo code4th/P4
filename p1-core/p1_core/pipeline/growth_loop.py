@@ -147,6 +147,13 @@ class GrowthLoop:
                     reason=str(evaluation["reason"]),
                     actor="growth_loop",
                 )
+                if evaluation["reason"] == "prior bounded experiment exists and should be reviewed before rerunning":
+                    governance_profile = self.governance_store.record_feedback(
+                        feedback_type="rerun_deferral",
+                        proposal_id=proposal.proposal_id,
+                        outcome="deferred_for_review",
+                        note="rerun was blocked pending comparison against prior bounded experiment",
+                    )
             elif evaluation["decision"] == "retire":
                 self.transition_knowledge(
                     record_id=records[index].record_id,
@@ -177,11 +184,16 @@ class GrowthLoop:
                     }
                 )
                 if governance["next_step"] == "autonomous_apply":
-                    experiment_results.append(
-                        self.experiment_runner.execute_bounded_action(
+                    experiment_payload = self.experiment_runner.execute_bounded_action(
                             proposal.proposal_id,
                             proposal.summary,
                         )
+                    experiment_results.append(experiment_payload)
+                    governance_profile = self.governance_store.record_feedback(
+                        feedback_type="autonomous_execution",
+                        proposal_id=proposal.proposal_id,
+                        outcome=str(experiment_payload["outcome"]),
+                        note="bounded autonomous action executed and recorded",
                     )
             elif evaluation["decision"] == "candidate" and governance["next_step"] == "defer_after_rejection":
                 self.transition_knowledge(
@@ -228,6 +240,7 @@ class GrowthLoop:
                 "policyApplications": len(policy_applications),
                 "governanceSnapshotId": governance_profile.get("snapshot_id"),
                 "autonomousExperiments": len(experiment_results),
+                "governanceFeedback": governance_profile.get("feedback", {}),
             },
         )
 
@@ -271,6 +284,7 @@ class GrowthLoop:
                 "policyApplications": len(policy_applications),
                 "governanceSnapshotId": governance_profile.get("snapshot_id"),
                 "autonomousExperiments": len(experiment_results),
+                "governanceFeedback": governance_profile.get("feedback", {}),
             },
             approval_pending=approval_pending,
             date=date,
@@ -340,6 +354,8 @@ class GrowthLoop:
                         f"constitution.require_auditability={governance_profile.get('constitution', {}).get('require_auditability')}",
                         f"laws.high_risk_requires_cloud_approval={governance_profile.get('laws', {}).get('high_risk_requires_cloud_approval')}",
                         f"laws.medium_risk_requires_cloud_approval={governance_profile.get('laws', {}).get('medium_risk_requires_cloud_approval')}",
+                        f"feedback.freeze_low_risk_autonomy={governance_profile.get('feedback', {}).get('freeze_low_risk_autonomy')}",
+                        f"feedback.rerun_deferral_count={governance_profile.get('feedback', {}).get('rerun_deferral_count')}",
                     ],
                 },
             ],

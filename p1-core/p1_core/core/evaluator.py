@@ -13,12 +13,16 @@ class Evaluator:
         constitution = governance.get("constitution", {})
         laws = governance.get("laws", {})
         operations = governance.get("operations", {})
+        feedback = governance.get("feedback", {})
         if matched_previous_summary and laws.get("allow_duplicate_retirement", True) is False:
             decision = "defer"
             reason = "duplicate proposal retained for comparison under governance law"
         elif operations.get("require_comparison_before_rerun", True) and previous_experiment_outcome:
             decision = "defer"
             reason = "prior bounded experiment exists and should be reviewed before rerunning"
+        elif feedback.get("freeze_low_risk_autonomy") and after.get("risk_level") == "low":
+            decision = "defer"
+            reason = "low-risk autonomy is temporarily frozen by long-horizon governance feedback"
         elif "obsolete" in after_text or "superseded" in after_text or matched_previous_summary:
             decision = "retire"
             reason = "proposal is obsolete or duplicates a previous snapshot"
@@ -45,5 +49,6 @@ class Evaluator:
                 "constitution": constitution,
                 "laws": laws,
                 "operations": operations,
+                "feedback": feedback,
             },
         }

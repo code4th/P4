@@ -318,6 +318,8 @@ python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 - 実 Ollama `qwen3:4b-instruct` で `p1_core.cli ingest` と worker `/summarize` が通ることを確認
 - low-risk autonomous proposal が `state/experiments/actions/*.json` に bounded action note を書くことを確認
 - prior experiment outcome が次回 rerun を `deferred` に戻すことを確認
+- repeated rerun deferral が governance feedback を通じて low-risk autonomy freeze へつながることを確認
+- end-to-end acceptance で governance feedback が後続の operator-visible decision を変えることを確認
 - rollback 実行後に `status` が `rollback_applied` を返すことを確認
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-smoke` を使った `keeper_adapter` 読み取り成功
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-loop-smoke` を使った growth loop 出力の `keeper_adapter` 読み取り成功
@@ -351,9 +353,8 @@ python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 
 ## 10. 次フェーズの優先順
 
-次にやるべきことは以下の順。
-
-1. experiment feedback を長期統治ルール側へ接続する
+次にやるべきことは、必須の骨格欠落を埋める作業ではなく、制度の質を高める作業である。
+現時点の P1 外部コアは、最小運用ループとしては完成扱いにしてよい。
 
 ## 11. コア完成条件
 

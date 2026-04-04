@@ -31,6 +31,8 @@ Completion target for this core:
 15. end-to-end lifecycle integration test across ingest, policy apply, and rollback
 16. real Ollama verification with a currently installed local model
 17. bounded external action execution for low-risk autonomous proposals
+18. long-horizon governance feedback linked to experiment outcomes
+19. end-to-end acceptance proving governance feedback changes later decisions
 
 ## Adapter strategy
 
@@ -50,4 +52,4 @@ Completion target for this core:
 
 ## Suggested next increment
 
-1. connect experiment feedback into longer-horizon governance rules
+1. refine governance feedback thresholds and operator review flows

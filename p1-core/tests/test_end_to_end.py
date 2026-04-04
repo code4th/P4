@@ -71,6 +71,49 @@ class EndToEndLifecycleTests(unittest.TestCase):
             self.assertEqual(final_state["latestProposalSnapshotId"], "2026-04-04-proposals")
             self.assertEqual(final_status["status"], "rollback_applied")
 
+    def test_governance_feedback_changes_later_operator_visible_decision(self) -> None:
+        class BoundedClient:
+            def generate_json(self, system_prompt: str, user_prompt: str) -> dict:
+                if '"task": "draft_lessons"' in user_prompt:
+                    if "distinct content" in user_prompt:
+                        return {
+                            "lessons": ["another bounded lesson"],
+                            "counterexamples": [],
+                            "follow_up_questions": ["question"],
+                        }
+                    return {
+                        "lessons": ["fresh bounded lesson"],
+                        "counterexamples": [],
+                        "follow_up_questions": ["question"],
+                    }
+                if '"task": "classify"' in user_prompt:
+                    return {"label": "proposal", "confidence": 0.9, "rationale": "bounded"}
+                return {"summary": "baseline summary", "keywords": ["baseline"]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            loop = build_loop(root, WorkerService(llm_client=BoundedClient(), log_dir=root / "logs" / "worker"))
+
+            loop.ingest_text("Observation without counterexamples.", date="2026-04-04")
+            loop.ingest_text("Observation without counterexamples.", date="2026-04-05")
+            loop.ingest_text("Observation without counterexamples.", date="2026-04-06")
+            result = loop.ingest_text("A fresh bounded lesson with distinct content.", date="2026-04-07")
+
+            state_payload = operator_state(root)
+            daily_payload = operator_report(root, kind="daily", date="2026-04-07")
+            governance_feedback = state_payload["governanceProfile"]["feedback"]
+
+            self.assertTrue(governance_feedback["freeze_low_risk_autonomy"])
+            self.assertEqual(governance_feedback["rerun_deferral_count"], 2)
+            self.assertEqual(
+                result["proposal_reviews"][0]["evaluation"]["reason"],
+                "low-risk autonomy is temporarily frozen by long-horizon governance feedback",
+            )
+            long_horizon_section = next(
+                section for section in daily_payload["sections"] if section["title"] == "Long-Horizon Governance"
+            )
+            self.assertIn("feedback.freeze_low_risk_autonomy=True", long_horizon_section["points"])
+
 
 if __name__ == "__main__":
     unittest.main()

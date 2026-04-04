@@ -9,10 +9,15 @@ class Governor:
         governance = proposal.get("governance_profile", {})
         operations = governance.get("operations", {})
         laws = governance.get("laws", {})
+        feedback = governance.get("feedback", {})
         risk_level = proposal.get("risk_level")
         autonomy_enabled = operations.get("autonomy_enabled", True)
         max_autonomous_risk = operations.get("max_autonomous_risk", "low")
-        autonomy_permitted = autonomy_enabled and risk_level == max_autonomous_risk
+        autonomy_permitted = (
+            autonomy_enabled
+            and risk_level == max_autonomous_risk
+            and feedback.get("freeze_low_risk_autonomy") is not True
+        )
         cloud_required = (
             (risk_level == "high" and laws.get("high_risk_requires_cloud_approval", True))
             or (risk_level == "medium" and laws.get("medium_risk_requires_cloud_approval", True))
@@ -44,4 +49,5 @@ class Governor:
             "next_step": next_step,
             "cloud_decision": cloud_decision,
             "governance_profile": governance,
+            "governance_feedback": feedback,
         }

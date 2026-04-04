@@ -229,7 +229,7 @@ For this project, core completion means all of the following:
 Therefore, the current state is:
 
 - minimal external core skeleton: complete
-- autonomous self-improvement core: not yet complete
+- bounded autonomous self-improvement core: complete as a minimum operational loop
 
 ## 8. Practical Operations Today
 
@@ -307,13 +307,13 @@ Verified in implementation:
 - real Ollama verification has been completed with `qwen3:4b-instruct` through both `p1_core.cli` and the HTTP worker
 - low-risk autonomous proposals can now execute a bounded external file action under `state/experiments/actions/`
 - prior experiment outcomes now defer reruns until reviewed
+- experiment feedback is now accumulated into long-horizon governance and can freeze low-risk autonomy after repeated rerun deferrals
+- end-to-end acceptance now covers governance feedback changing a later operator-visible decision
 - `keeper_adapter` reads `glance / daily / approvals` from generated outputs
 
 ## 11. Remaining Work
 
-The next meaningful work is no longer basic skeleton building. It is quality and autonomy work:
-
-1. let experiment outcomes influence later proposal quality and promotion logic more deeply
+The next meaningful work is no longer basic skeleton building. It is now incremental quality work rather than a missing core subsystem.
 
 ## 12. Supporting Documents
 

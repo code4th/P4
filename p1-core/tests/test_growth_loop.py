@@ -188,6 +188,12 @@ class GrowthLoopTests(unittest.TestCase):
         class NoCounterexampleClient:
             def generate_json(self, system_prompt: str, user_prompt: str) -> dict:
                 if '"task": "draft_lessons"' in user_prompt:
+                    if "distinct content" in user_prompt:
+                        return {
+                            "lessons": ["another bounded lesson"],
+                            "counterexamples": [],
+                            "follow_up_questions": ["question"],
+                        }
                     return {
                         "lessons": ["fresh bounded lesson"],
                         "counterexamples": [],
@@ -234,6 +240,43 @@ class GrowthLoopTests(unittest.TestCase):
             self.assertEqual(
                 second["proposal_reviews"][0]["evaluation"]["reason"],
                 "prior bounded experiment exists and should be reviewed before rerunning",
+            )
+            governance = json.loads((root / "state" / "governance" / "latest-governance.json").read_text(encoding="utf-8"))
+            self.assertEqual(governance["feedback"]["rerun_deferral_count"], 1)
+
+    def test_growth_loop_freezes_low_risk_autonomy_after_repeated_rerun_deferrals(self) -> None:
+        class NoCounterexampleClient:
+            def generate_json(self, system_prompt: str, user_prompt: str) -> dict:
+                if '"task": "draft_lessons"' in user_prompt:
+                    if "distinct content" in user_prompt:
+                        return {
+                            "lessons": ["another bounded lesson"],
+                            "counterexamples": [],
+                            "follow_up_questions": ["question"],
+                        }
+                    return {
+                        "lessons": ["fresh bounded lesson"],
+                        "counterexamples": [],
+                        "follow_up_questions": ["question"],
+                    }
+                if '"task": "classify"' in user_prompt:
+                    return {"label": "proposal", "confidence": 0.9, "rationale": "bounded"}
+                return {"summary": "baseline summary", "keywords": ["baseline"]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worker = WorkerService(llm_client=NoCounterexampleClient(), log_dir=root / "logs" / "worker")
+            loop = build_loop(root, worker)
+            loop.ingest_text("Observation without counterexamples.", date="2026-04-04")
+            loop.ingest_text("Observation without counterexamples.", date="2026-04-05")
+            loop.ingest_text("Observation without counterexamples.", date="2026-04-06")
+            governance = json.loads((root / "state" / "governance" / "latest-governance.json").read_text(encoding="utf-8"))
+            self.assertTrue(governance["feedback"]["freeze_low_risk_autonomy"])
+            fourth = loop.ingest_text("A fresh bounded lesson with distinct content.", date="2026-04-07")
+            self.assertIn("defer", fourth["evaluation_decisions"])
+            self.assertEqual(
+                fourth["proposal_reviews"][0]["evaluation"]["reason"],
+                "low-risk autonomy is temporarily frozen by long-horizon governance feedback",
             )
 
     def test_growth_loop_retires_obsolete_candidate(self) -> None:
