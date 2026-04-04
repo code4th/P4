@@ -465,6 +465,7 @@ Current limitation:
 - P1 can scaffold `~/.openclaw/agents/p1/` and apply or roll back `openclaw.json` registration through explicit external scripts
 - registration is still an operator action, not an internal OpenClaw self-spawn
 - `openclaw agent --agent p1` currently runs as an OpenClaw embedded agent against the P1 workspace; it does not yet route through `bin/p1-agent`, so direct OpenClaw turns do not automatically append to `state/conversation/` or `state/world/`
+- until a deeper adapter exists, the verified external-core-backed entrypoint is `bin/p1-agent` or `keeper_adapter.cli`
 - OpenClaw still remains a thin control plane and should not absorb P1 judgment logic
 
 ## 9. Rollback Principles
