@@ -49,6 +49,7 @@ class EndToEndLifecycleTests(unittest.TestCase):
             self.assertEqual(status_after_ingest["policyRuleCount"], 1)
             self.assertEqual(state_after_ingest["latestPolicyRuleCount"], 1)
             self.assertIn("Short-Horizon Governance", [section["title"] for section in daily_after_ingest["sections"]])
+            self.assertEqual(state_after_ingest["latestProposalSnapshotId"], "2026-04-04-proposals")
 
             rollback_result = operator_rollback(root, target="policies", snapshot_id="baseline-policy")
             self.assertEqual(rollback_result["restored_from_snapshot_id"], "baseline-policy")
@@ -60,6 +61,15 @@ class EndToEndLifecycleTests(unittest.TestCase):
             self.assertEqual(status_after_rollback["policySnapshotId"], "baseline-policy")
             self.assertEqual(state_after_rollback["latestPolicyRuleCount"], 0)
             self.assertEqual(daily_after_rollback["status"], "policy_rollback_applied")
+
+            proposal_rollback = operator_rollback(root, target="proposals", snapshot_id="2026-04-04-proposals")
+            self.assertEqual(proposal_rollback["restored_from_snapshot_id"], "2026-04-04-proposals")
+            final_status = operator_status(root)
+            final_daily = operator_report(root, kind="daily")
+            final_state = operator_state(root)
+            self.assertEqual(final_daily["status"], "rollback_applied")
+            self.assertEqual(final_state["latestProposalSnapshotId"], "2026-04-04-proposals")
+            self.assertEqual(final_status["status"], "rollback_applied")
 
 
 if __name__ == "__main__":

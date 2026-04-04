@@ -287,6 +287,7 @@ Verified in implementation:
 - short-horizon and long-horizon governance layers are written into daily reports
 - a unified operator CLI now exposes ingest / status / approvals / state / rollback from `p1-core`
 - an end-to-end lifecycle test now verifies ingest -> approval/policy apply -> operator visibility -> rollback
+- the lifecycle acceptance path now covers both policy rollback and proposal rollback through the operator surface
 - real Ollama verification has been completed with `qwen3:4b-instruct` through both `p1_core.cli` and the HTTP worker
 - `keeper_adapter` reads `glance / daily / approvals` from generated outputs
 
