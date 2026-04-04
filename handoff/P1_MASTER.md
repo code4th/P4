@@ -7,6 +7,53 @@ Main-thread catch-up:
 
 - [p1-main-thread-catchup-2026-04-04.md](/Users/satojunichi/Documents/openclaw/handoff/p1-main-thread-catchup-2026-04-04.md)
 
+## 0. Purpose Before Means
+
+This document should be read purpose-first.
+
+If a tool, runtime, worker, or interface choice conflicts with the intended purpose, the purpose wins and the means should be changed.
+
+### 0.1 Intended Outcome
+
+The intended outcome is not merely a set of modules.
+
+The intended outcome is that:
+
+- the manager can talk to P1 as a distinct agent alongside the main OpenClaw agent
+- P1 can think with LLM-backed reasoning as its main loop
+- P1 can observe, judge, propose, evaluate, and improve over time
+- P1 can preserve memory, governance, comparison trails, and rollback paths
+- P1 can continue to evolve without being trapped inside a single runtime
+
+### 0.2 Intended Daily Experience
+
+The intended day-to-day experience is:
+
+- P1 is visible from the OpenClaw side as its own agent interface
+- the manager talks to P1 through that interface, not primarily through maintenance scripts
+- P1 uses OpenClaw as the practical runtime for conversation, tool use, and operations
+- P1's long-horizon memory, governance, audit, and rollback remain outside OpenClaw
+
+### 0.3 Layer Roles
+
+The target layer split is:
+
+- OpenClaw-side P1 agent interface
+  - the front door
+  - conversation, tool use, and practical runtime behavior
+- external core
+  - memory, policy, governance, audit, comparison, rollback
+- local or cloud model providers
+  - reasoning supply, not identity
+
+### 0.4 Current Reading Rule
+
+When deciding what to build next:
+
+- prefer choices that make P1 easier to use as a separate OpenClaw-visible agent
+- prefer choices that keep governance and rollback outside OpenClaw
+- treat bootstrap wrappers and temporary CLIs as scaffolding, not the final product
+
 Interface correction:
 
 - the currently implemented external-core operator surface is useful, but it is not the final intended front-end
