@@ -273,6 +273,15 @@ Important:
 - do not force heavier local models through the same synchronous interaction path as the fast auxiliary model
 - instead, give them background-job semantics with queueing, longer time budgets, and delayed result pickup
 
+Implemented minimum path:
+
+- `p1_core.cli ingest --background-model ...`
+  - runs fast judgment immediately
+  - queues heavy local analysis under `state/background_jobs/queue/`
+- `p1_core.cli run-background-job --job-id ... --model ...`
+  - completes queued heavy analysis
+  - runs lesson extraction and downstream proposal / governance work after the queue step
+
 ### 5.3 Bootstrap
 
 External workspace scaffolding:
@@ -448,6 +457,7 @@ Current operational entrypoints:
    - `python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1`
    - `python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --agent-name p1 --rollback`
    - timestamped backups are created before mutation
+   - `openclaw.json` keeps only a minimal slot registration; P1 identity details remain in the external workspace and `~/.openclaw/agents/p1/agent/p1-openclaw-entry.json`
 
 Current limitation:
 

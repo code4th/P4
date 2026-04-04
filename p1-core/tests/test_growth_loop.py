@@ -28,6 +28,55 @@ class FakeGrowthClient:
 
 
 class GrowthLoopTests(unittest.TestCase):
+    def test_growth_loop_can_queue_background_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worker = WorkerService(llm_client=FakeGrowthClient(), log_dir=root / "logs" / "worker")
+            loop = build_loop(root, worker)
+            result = loop.ingest_fast_and_queue_background(
+                "Repeated timeout failures were observed.",
+                background_model="gemma4:e4b",
+                date="2026-04-04",
+            )
+            self.assertTrue(result["queued"])
+            self.assertEqual(result["background_job"]["model"], "gemma4:e4b")
+            self.assertEqual(loop.background_job_store.counts()["queued"], 1)
+            glance_payload = json.loads((root / "state" / "reports" / "daily" / "2026-04-04-glance.json").read_text(encoding="utf-8"))
+            self.assertEqual(glance_payload["status"], "background_analysis_queued")
+
+    def test_growth_loop_can_process_background_job(self) -> None:
+        class FastClient:
+            def generate_json(self, system_prompt: str, user_prompt: str) -> dict:
+                if '"task": "classify"' in user_prompt:
+                    return {"label": "proposal", "confidence": 0.81, "rationale": "contains operational lessons"}
+                return {"summary": "Timeout clusters suggest cautious policy review.", "keywords": ["timeout", "rollback"]}
+
+        class BackgroundClient:
+            def generate_json(self, system_prompt: str, user_prompt: str) -> dict:
+                return {
+                    "lessons": ["repair proposals need explicit rollback points"],
+                    "counterexamples": [],
+                    "follow_up_questions": ["did tool selection change before failures?"],
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fast_worker = WorkerService(llm_client=FastClient(), log_dir=root / "logs" / "worker")
+            background_worker = WorkerService(llm_client=BackgroundClient(), log_dir=root / "logs" / "worker")
+            loop = build_loop(root, fast_worker)
+            queued = loop.ingest_fast_and_queue_background(
+                "Repeated timeout failures were observed.",
+                background_model="gemma4:e4b",
+                date="2026-04-04",
+            )
+            completed = loop.process_background_job(
+                job_id=queued["background_job"]["job_id"],
+                background_worker_service=background_worker,
+            )
+            self.assertEqual(completed["status"], "completed")
+            self.assertEqual(completed["result"]["records_written"], 1)
+            self.assertEqual(loop.background_job_store.counts()["queued"], 0)
+
     def test_growth_loop_persists_knowledge_and_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from p1_core.core.knowledge_store import EventLog, KnowledgeStore
 from p1_core.core.critic import Critic
 from p1_core.core.cloud_evaluation import CloudEvaluationStore
+from p1_core.core.background_job_store import BackgroundJobStore
 from p1_core.core.evaluator import Evaluator
 from p1_core.core.experiment_runner import ExperimentRunner
 from p1_core.core.governance_store import GovernanceStore
@@ -38,6 +39,7 @@ class GrowthLoop:
     policy_store: PolicyStore = field(init=False)
     governance_store: GovernanceStore = field(init=False)
     experiment_runner: ExperimentRunner = field(init=False)
+    background_job_store: BackgroundJobStore = field(init=False)
 
     def __post_init__(self) -> None:
         self.knowledge_store = KnowledgeStore(self.root / "state" / "knowledge" / "knowledge.jsonl")
@@ -46,6 +48,7 @@ class GrowthLoop:
         self.policy_store = PolicyStore(self.root / "state" / "policies")
         self.governance_store = GovernanceStore(self.root / "state" / "governance")
         self.experiment_runner = ExperimentRunner(self.root)
+        self.background_job_store = BackgroundJobStore(self.root / "state" / "background_jobs")
 
     @staticmethod
     def _approval_status(cloud_response: dict | None) -> str:
@@ -63,6 +66,156 @@ class GrowthLoop:
         lesson_result = self.worker_service.draft_lessons({"text": text})["result"]
         classify_result = self.worker_service.classify({"text": text})["result"]
         summary_result = self.worker_service.summarize({"text": text, "max_sentences": 2})["result"]
+        return self._finalize_analysis(
+            text=text,
+            lesson_result=lesson_result,
+            classify_result=classify_result,
+            summary_result=summary_result,
+            governance_profile=governance_profile,
+            date=date,
+        )
+
+    def ingest_fast_and_queue_background(
+        self,
+        text: str,
+        *,
+        background_model: str,
+        date: str | None = None,
+    ) -> dict:
+        classify_result = self.worker_service.classify({"text": text})["result"]
+        summary_result = self.worker_service.summarize({"text": text, "max_sentences": 2})["result"]
+        queued = self.background_job_store.enqueue(
+            job_type="background_analysis",
+            model=background_model,
+            payload={
+                "input_text": text,
+                "summary_result": summary_result,
+                "classify_result": classify_result,
+            },
+            date=date,
+        )
+        counts = self.background_job_store.counts()
+        report_date = date or datetime.now(UTC).date().isoformat()
+        self.event_log.append(
+            "growth_loop_fast_ingest",
+            {
+                "input_text": text,
+                "background_job_id": queued["job_id"],
+                "background_model": background_model,
+                "classification_label": classify_result.get("label"),
+                "queued_jobs": counts["queued"],
+            },
+        )
+        self.report_writer.write_glance(
+            status="background_analysis_queued",
+            main_points=[
+                "fast judgment completed",
+                f"background analysis queued: {queued['job_id']}",
+            ],
+            recommended_interventions=[
+                "allow background analysis to complete before promotion decisions",
+                "use fast judgment only for routing and triage",
+            ],
+            track_summary={
+                "classificationLabel": classify_result.get("label", "unknown"),
+                "queuedBackgroundJobs": counts["queued"],
+                "completedBackgroundJobs": counts["completed"],
+                "failedBackgroundJobs": counts["failed"],
+            },
+            approval_pending=[],
+            date=report_date,
+        )
+        self.report_writer.write_daily(
+            status="background_analysis_queued",
+            summary=str(summary_result.get("summary", "background analysis queued")),
+            sections=[
+                {
+                    "title": "Fast Judgment",
+                    "points": [
+                        f"classification label: {classify_result.get('label', 'unknown')}",
+                        f"confidence: {classify_result.get('confidence', 'unknown')}",
+                    ],
+                },
+                {
+                    "title": "Background Queue",
+                    "points": [
+                        f"job id: {queued['job_id']}",
+                        f"model: {background_model}",
+                        f"queued jobs: {counts['queued']}",
+                    ],
+                },
+            ],
+            proposals=[],
+            date=report_date,
+        )
+        self.report_writer.write_health(
+            status="background_analysis_queued",
+            approval_pending=[],
+            notes=[
+                f"background analysis queued: {queued['job_id']}",
+                f"background model: {background_model}",
+                f"queued jobs: {counts['queued']}",
+            ],
+        )
+        return {
+            "queued": True,
+            "background_job": queued,
+            "classification": classify_result,
+            "summary": summary_result,
+            "background_job_counts": counts,
+        }
+
+    def process_background_job(
+        self,
+        *,
+        job_id: str,
+        background_worker_service: WorkerService,
+    ) -> dict:
+        job = self.background_job_store.get_queued(job_id)
+        if not job:
+            raise FileNotFoundError(f"background job not found: {job_id}")
+        payload = job["payload"]
+        try:
+            lesson_result = background_worker_service.draft_lessons({"text": payload["input_text"]})["result"]
+            result = self._finalize_analysis(
+                text=str(payload["input_text"]),
+                lesson_result=lesson_result,
+                classify_result=dict(payload["classify_result"]),
+                summary_result=dict(payload["summary_result"]),
+                governance_profile=self.governance_store.latest(),
+                date=job.get("date"),
+            )
+        except Exception as exc:
+            failure = self.background_job_store.fail(job_id, str(exc))
+            self.report_writer.write_health(
+                status="background_analysis_failed",
+                approval_pending=[],
+                notes=[f"background job failed: {job_id}", str(exc)],
+            )
+            self.event_log.append("background_job_failed", failure)
+            raise
+        completed = self.background_job_store.complete(job_id, result)
+        self.event_log.append(
+            "background_job_completed",
+            {
+                "job_id": job_id,
+                "background_model": job.get("model"),
+                "records_written": result.get("records_written", 0),
+                "proposals_written": result.get("proposals_written", 0),
+            },
+        )
+        return completed
+
+    def _finalize_analysis(
+        self,
+        *,
+        text: str,
+        lesson_result: dict,
+        classify_result: dict,
+        summary_result: dict,
+        governance_profile: dict,
+        date: str | None,
+    ) -> dict:
 
         lessons = lesson_result.get("lessons", [])
         counterexamples = lesson_result.get("counterexamples", [])

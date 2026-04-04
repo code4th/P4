@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from p1_core.core.chat_agent import ChatAgent
+from p1_core.core.background_job_store import BackgroundJobStore
 from p1_core.core.conversation_store import ConversationStore
 from p1_core.core.governance_store import GovernanceStore
 from p1_core.core.knowledge_store import KnowledgeStore
@@ -66,6 +67,7 @@ def operator_state(root: Path) -> dict[str, Any]:
     proposal_store = ProposalStore(root / "state" / "proposals")
     policy_store = PolicyStore(root / "state" / "policies")
     governance_store = GovernanceStore(root / "state" / "governance")
+    background_jobs = BackgroundJobStore(root / "state" / "background_jobs")
     latest_proposals = proposal_store.latest() or {}
     return {
         "knowledgeStateCounts": knowledge_store.counts_by_state(),
@@ -76,18 +78,41 @@ def operator_state(root: Path) -> dict[str, Any]:
         "latestPolicyRuleCount": len(policy_store.latest().get("rules", [])),
         "latestGovernanceSnapshotId": governance_store.latest().get("snapshot_id"),
         "governanceProfile": governance_store.latest(),
+        "backgroundJobCounts": background_jobs.counts(),
+        "queuedBackgroundJobs": background_jobs.list_queued(),
         "worldState": WorldStore(root / "state" / "world").latest(),
         "recentConversation": ConversationStore(root / "state" / "conversation").recent(),
     }
 
 
-def operator_ingest(root: Path, *, input_text: str, model: str) -> dict[str, Any]:
+def operator_ingest(
+    root: Path,
+    *,
+    input_text: str,
+    model: str,
+    background_model: str | None = None,
+) -> dict[str, Any]:
     worker = WorkerService(
         llm_client=OllamaClient(model=model),
         log_dir=root / "logs" / "worker",
     )
     loop = build_loop(root, worker)
+    if background_model:
+        return loop.ingest_fast_and_queue_background(input_text, background_model=background_model)
     return loop.ingest_text(input_text)
+
+
+def operator_run_background_job(root: Path, *, job_id: str, model: str) -> dict[str, Any]:
+    fast_worker = WorkerService(
+        llm_client=OllamaClient(model="qwen3:4b-instruct"),
+        log_dir=root / "logs" / "worker",
+    )
+    background_worker = WorkerService(
+        llm_client=OllamaClient(model=model),
+        log_dir=root / "logs" / "worker",
+    )
+    loop = build_loop(root, fast_worker)
+    return loop.process_background_job(job_id=job_id, background_worker_service=background_worker)
 
 
 def operator_rollback(root: Path, *, target: str, snapshot_id: str) -> dict[str, Any]:
@@ -129,6 +154,11 @@ def parse_args() -> argparse.Namespace:
     ingest_parser = subparsers.add_parser("ingest", help="Run the growth loop on an input text")
     ingest_parser.add_argument("--input-text", required=True)
     ingest_parser.add_argument("--model", default="qwen3:4b-instruct")
+    ingest_parser.add_argument("--background-model")
+
+    background_parser = subparsers.add_parser("run-background-job", help="Process a queued background analysis job")
+    background_parser.add_argument("--job-id", required=True)
+    background_parser.add_argument("--model", default="gemma4:e4b")
 
     status_parser = subparsers.add_parser("status", help="Show operator-facing P1 status")
     status_parser.add_argument("--date")
@@ -166,7 +196,9 @@ def main() -> None:
     root = Path(args.root).expanduser()
 
     if args.subcommand == "ingest":
-        payload = operator_ingest(root, input_text=args.input_text, model=args.model)
+        payload = operator_ingest(root, input_text=args.input_text, model=args.model, background_model=args.background_model)
+    elif args.subcommand == "run-background-job":
+        payload = operator_run_background_job(root, job_id=args.job_id, model=args.model)
     elif args.subcommand == "status":
         payload = operator_status(root, date=args.date)
     elif args.subcommand == "approvals":

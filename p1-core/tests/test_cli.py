@@ -4,8 +4,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from p1_core.cli import operator_action, operator_approvals, operator_observe, operator_report, operator_state, operator_status
+from p1_core.cli import operator_action, operator_approvals, operator_ingest, operator_observe, operator_report, operator_run_background_job, operator_state, operator_status
 from p1_core.core.chat_agent import ChatAgent
 from p1_core.core.conversation_store import ConversationStore
 from p1_core.core.governance_store import GovernanceStore
@@ -14,6 +15,13 @@ from p1_core.core.world_store import WorldStore
 
 
 class OperatorCliTests(unittest.TestCase):
+    def test_operator_state_includes_background_job_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = operator_state(root)
+            self.assertEqual(payload["backgroundJobCounts"]["queued"], 0)
+            self.assertEqual(payload["queuedBackgroundJobs"], [])
+
     def test_operator_status_and_approvals_read_generated_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -127,6 +135,63 @@ class OperatorCliTests(unittest.TestCase):
             state = operator_state(root)
             self.assertEqual(payload["reply"], "P1 response")
             self.assertEqual(len(state["recentConversation"]), 2)
+
+    def test_operator_ingest_can_queue_background_analysis(self) -> None:
+        class FakeClient:
+            def __init__(self, model: str, base_url: str = "http://127.0.0.1:11434", timeout_seconds: float = 60.0) -> None:
+                self.model = model
+
+            def generate_json(self, system_prompt: str, user_prompt: str) -> dict:
+                if '"task": "classify"' in user_prompt:
+                    return {"label": "proposal", "confidence": 0.7, "rationale": "triage"}
+                return {"summary": "fast summary", "keywords": ["fast", "summary"]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("p1_core.cli.OllamaClient", FakeClient):
+                payload = operator_ingest(
+                    root,
+                    input_text="background me",
+                    model="qwen3:4b-instruct",
+                    background_model="gemma4:e4b",
+                )
+            self.assertTrue(payload["queued"])
+            self.assertEqual(payload["background_job"]["model"], "gemma4:e4b")
+            state = operator_state(root)
+            self.assertEqual(state["backgroundJobCounts"]["queued"], 1)
+
+    def test_operator_run_background_job_processes_queue(self) -> None:
+        class FakeClient:
+            def __init__(self, model: str, base_url: str = "http://127.0.0.1:11434", timeout_seconds: float = 60.0) -> None:
+                self.model = model
+
+            def generate_json(self, system_prompt: str, user_prompt: str) -> dict:
+                if self.model == "qwen3:4b-instruct":
+                    if '"task": "classify"' in user_prompt:
+                        return {"label": "proposal", "confidence": 0.9, "rationale": "triage"}
+                    return {"summary": "fast summary", "keywords": ["fast", "summary"]}
+                return {
+                    "lessons": ["fresh bounded lesson"],
+                    "counterexamples": [],
+                    "follow_up_questions": ["question"],
+                }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("p1_core.cli.OllamaClient", FakeClient):
+                queued = operator_ingest(
+                    root,
+                    input_text="background me",
+                    model="qwen3:4b-instruct",
+                    background_model="gemma4:e4b",
+                )
+                completed = operator_run_background_job(
+                    root,
+                    job_id=queued["background_job"]["job_id"],
+                    model="gemma4:e4b",
+                )
+            self.assertEqual(completed["status"], "completed")
+            self.assertEqual(completed["result"]["records_written"], 1)
 
 
 if __name__ == "__main__":
