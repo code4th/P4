@@ -25,6 +25,7 @@ Completion target for this core:
 9. cloud-side evaluation request/response contract for approval-gated proposals
 10. minimal external core module layout
 11. repeatable runbooks and rollback notes
+12. policy-state snapshot application and rollback support
 
 ## Adapter strategy
 
@@ -44,8 +45,7 @@ Completion target for this core:
 
 ## Suggested next increment
 
-1. apply cloud review responses back into approval and promotion decisions
-2. formalize rollback of knowledge state as well as proposal state
-3. connect evaluator / governor decisions to longer-horizon governance rules
-4. run end-to-end verification against a real Ollama worker
-5. add an experiment layer for low-risk external actions beyond dry-run recording
+1. connect evaluator / governor decisions to longer-horizon governance rules
+2. run end-to-end verification against a real Ollama worker
+3. add an experiment layer for low-risk external actions beyond dry-run recording
+4. connect experiment feedback into longer-horizon governance rules

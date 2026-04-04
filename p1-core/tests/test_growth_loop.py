@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from p1_core.core.policy_engine import PolicyEngine
 from p1_core.models import KnowledgeState
 from p1_core.pipeline.growth_loop import build_loop
 from p1_core.worker.service import WorkerService
@@ -92,6 +93,44 @@ class GrowthLoopTests(unittest.TestCase):
             self.assertEqual(latest["snapshot_id"], "2026-04-04-proposals")
             self.assertIn("restored_at", latest)
 
+    def test_growth_loop_applies_and_restores_policy_snapshot(self) -> None:
+        class ApprovalClient:
+            def generate_json(self, system_prompt: str, user_prompt: str) -> dict:
+                if '"task": "draft_lessons"' in user_prompt:
+                    return {
+                        "lessons": ["needs manager approval for broader change"],
+                        "counterexamples": [],
+                        "follow_up_questions": [],
+                    }
+                if '"task": "classify"' in user_prompt:
+                    return {"label": "proposal", "confidence": 0.88, "rationale": "non-bounded"}
+                return {"summary": "approval path summary", "keywords": ["approval"]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worker = WorkerService(llm_client=ApprovalClient(), log_dir=root / "logs" / "worker")
+            loop = build_loop(root, worker)
+            proposal = PolicyEngine().classify("needs manager approval for broader change")
+            response_path = root / "state" / "cloud_evaluation" / "responses" / f"{proposal.proposal_id}.json"
+            response_path.parent.mkdir(parents=True, exist_ok=True)
+            response_path.write_text(
+                json.dumps({"proposal_id": proposal.proposal_id, "decision": "approve"}, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            result = loop.ingest_text("Observation requiring approval.", date="2026-04-04")
+            self.assertEqual(len(result["policy_applications"]), 1)
+            latest_policy = json.loads((root / "state" / "policies" / "latest-policy.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(latest_policy["rules"]), 1)
+            snapshot_id = latest_policy["snapshot_id"]
+
+            baseline = loop.rollback_policies("baseline-policy")
+            self.assertEqual(baseline["restored_from_snapshot_id"], "baseline-policy")
+            restored_policy = json.loads((root / "state" / "policies" / "latest-policy.json").read_text(encoding="utf-8"))
+            self.assertEqual(restored_policy["snapshot_id"], "baseline-policy")
+            self.assertEqual(restored_policy["rules"], [])
+            self.assertNotEqual(snapshot_id, "baseline-policy")
+
     def test_growth_loop_promotes_counterexample_free_candidate_to_active(self) -> None:
         class NoCounterexampleClient:
             def generate_json(self, system_prompt: str, user_prompt: str) -> dict:
@@ -113,6 +152,7 @@ class GrowthLoopTests(unittest.TestCase):
             self.assertIn("candidate", result["evaluation_decisions"])
             counts = loop.knowledge_store.counts_by_state()
             self.assertEqual(counts["active"], 1)
+            self.assertEqual(len(result["policy_applications"]), 1)
 
     def test_growth_loop_retires_obsolete_candidate(self) -> None:
         class ObsoleteClient:

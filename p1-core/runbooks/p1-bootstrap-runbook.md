@@ -40,13 +40,18 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 - rollback updates `glance`, `daily`, and `health` so bridge-visible state stays aligned
 - evaluator considers previous snapshot duplication and state history for `active / deferred / retired`
 - approval-gated proposals emit cloud-review request files under `state/cloud_evaluation/requests/`
+- cloud review responses in `state/cloud_evaluation/responses/` are applied during ingest
+- policy snapshots are written under `state/policies/snapshots/` when proposals are approved
+- policy state can be restored with `--rollback-policy-snapshot-id`
 
 ## Rollback
 
 1. Stop the worker process.
 2. Restore a previous proposal snapshot.
    - `python3 -m p1_core.pipeline.growth_loop --root /Users/satojunichi/.openclaw/workspace/systems/p1 --rollback-snapshot-id 2026-04-04-proposals`
-3. Confirm `state/proposals/latest-proposals.json` now points to the restored snapshot.
-4. Confirm OpenClaw bridge now reads `rollback_applied` from `status` and `report`.
-5. Move failed artifacts into `state/archive/` only after the restored state is confirmed.
-6. Do not mutate OpenClaw-side policy logic during rollback.
+3. Restore a previous policy snapshot when needed.
+   - `python3 -m p1_core.pipeline.growth_loop --root /Users/satojunichi/.openclaw/workspace/systems/p1 --rollback-policy-snapshot-id baseline-policy`
+4. Confirm `state/proposals/latest-proposals.json` or `state/policies/latest-policy.json` now points to the restored snapshot.
+5. Confirm OpenClaw bridge now reads `rollback_applied` or `policy_rollback_applied` from `status` and `report`.
+6. Move failed artifacts into `state/archive/` only after the restored state is confirmed.
+7. Do not mutate OpenClaw-side policy logic during rollback.

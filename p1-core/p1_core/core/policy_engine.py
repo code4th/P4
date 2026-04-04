@@ -16,10 +16,18 @@ class PolicyEngine:
 
     def classify(self, summary: str) -> PolicyProposal:
         lower = summary.lower()
-        risk_level = "high" if "rollback" in lower or "delete" in lower else "medium"
+        if "rollback" in lower or "delete" in lower:
+            risk_level = "high"
+            requires_approval = True
+        elif "bounded" in lower or "small experiment" in lower or "minor" in lower:
+            risk_level = "low"
+            requires_approval = False
+        else:
+            risk_level = "medium"
+            requires_approval = True
         return PolicyProposal(
             proposal_id=f"proposal:{abs(hash(summary))}",
             summary=summary,
             risk_level=risk_level,
-            requires_approval=True,
+            requires_approval=requires_approval,
         )

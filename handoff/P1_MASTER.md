@@ -273,19 +273,21 @@ Verified in implementation:
 - `retired` works for obsolete and duplicate-against-previous-snapshot proposals
 - governance review is written into snapshots and daily reports
 - rollback updates proposal latest pointer and bridge-visible state
+- cloud review `approve` / `reject` responses are applied during governance
+- knowledge state snapshots can be restored without deleting append-only history
+- approved proposals can mutate versioned policy state under `state/policies/`
+- policy snapshots can be rolled back through a current-pointer restore path
 - `keeper_adapter` reads `glance / daily / approvals` from generated outputs
 
 ## 11. Remaining Work
 
 The next meaningful work is no longer basic skeleton building. It is quality and autonomy work:
 
-1. connect cloud-side evaluation to approval and promotion decisions
-2. add rollback snapshots for knowledge-state layer itself
-3. connect evaluator / governor decisions to longer-horizon governance rules
-4. split reporting into short-term and long-term governance layers
-5. run end-to-end verification against a real Ollama worker
-6. add an experiment layer for low-risk external actions
-7. let low-risk improvements run autonomously while keeping high-risk changes approval-gated
+1. connect evaluator / governor decisions to longer-horizon governance rules
+2. split reporting into short-term and long-term governance layers
+3. run end-to-end verification against a real Ollama worker
+4. add an experiment layer for low-risk external actions beyond dry-run recording
+5. let experiment outcomes influence later proposal quality and promotion logic more deeply
 
 ## 12. Supporting Documents
 

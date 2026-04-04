@@ -13,6 +13,7 @@ from p1_core.core.cloud_evaluation import CloudEvaluationStore
 from p1_core.core.evaluator import Evaluator
 from p1_core.core.governor import Governor
 from p1_core.core.policy_engine import PolicyEngine
+from p1_core.core.policy_store import PolicyStore
 from p1_core.core.proposal_store import ProposalStore
 from p1_core.models import KnowledgeRecord, KnowledgeState
 from p1_core.reporting.report_writer import ReportWriter
@@ -32,11 +33,24 @@ class GrowthLoop:
     knowledge_store: KnowledgeStore = field(init=False)
     event_log: EventLog = field(init=False)
     proposal_store: ProposalStore = field(init=False)
+    policy_store: PolicyStore = field(init=False)
 
     def __post_init__(self) -> None:
         self.knowledge_store = KnowledgeStore(self.root / "state" / "knowledge" / "knowledge.jsonl")
         self.event_log = EventLog(self.root / "state" / "events" / "event-log.jsonl")
         self.proposal_store = ProposalStore(self.root / "state" / "proposals")
+        self.policy_store = PolicyStore(self.root / "state" / "policies")
+
+    @staticmethod
+    def _approval_status(cloud_response: dict | None) -> str:
+        if not cloud_response:
+            return "pending"
+        decision = str(cloud_response.get("decision", "pending"))
+        if decision == "approve":
+            return "approved"
+        if decision == "reject":
+            return "rejected"
+        return "responded"
 
     def ingest_text(self, text: str, *, date: str | None = None) -> dict:
         lesson_result = self.worker_service.draft_lessons({"text": text})["result"]
@@ -72,6 +86,7 @@ class GrowthLoop:
         ]
         proposal_reviews = []
         cloud_requests = []
+        policy_applications = []
         for index, proposal in enumerate(proposals):
             proposal_dict = asdict(proposal)
             critique = self.critic.critique(proposal.summary, counterexamples=[str(item) for item in counterexamples])
@@ -92,7 +107,6 @@ class GrowthLoop:
                     "counterexamples_present": bool(counterexamples),
                 },
             )
-            governance = self.governor.gate({**proposal_dict, "evaluation": evaluation, "critique": critique})
             cloud_response = None
             cloud_request_path = None
             if proposal.requires_approval:
@@ -102,16 +116,13 @@ class GrowthLoop:
                         "proposal": proposal_dict,
                         "critique": critique,
                         "evaluation": evaluation,
-                        "governance": governance,
                     },
                 )
                 cloud_response = self.cloud_evaluation_store.load_response(proposal.proposal_id)
-                if cloud_response:
-                    governance = {
-                        **governance,
-                        "cloud_decision": cloud_response,
-                    }
                 cloud_requests.append(str(cloud_request_path))
+            governance = self.governor.gate(
+                {**proposal_dict, "evaluation": evaluation, "critique": critique, "cloud_response": cloud_response}
+            )
             if evaluation["decision"] == "defer":
                 self.transition_knowledge(
                     record_id=records[index].record_id,
@@ -126,11 +137,33 @@ class GrowthLoop:
                     reason=str(evaluation["reason"]),
                     actor="growth_loop",
                 )
-            elif evaluation["decision"] == "candidate":
+            elif evaluation["decision"] == "candidate" and governance["approved"]:
                 self.transition_knowledge(
                     record_id=records[index].record_id,
                     new_state=KnowledgeState.ACTIVE,
-                    reason="bounded candidate without counterexamples promoted to active working knowledge",
+                    reason=(
+                        "candidate promoted to active after bounded policy application"
+                        if proposal.requires_approval is False
+                        else "candidate promoted to active after cloud-approved policy application"
+                    ),
+                    actor="growth_loop",
+                )
+                policy_snapshot_path = self.policy_store.apply_proposal(
+                    proposal_dict,
+                    snapshot_name=f"{date}-{proposal.proposal_id.replace(':', '-')}-policy" if date else None,
+                )
+                policy_applications.append(
+                    {
+                        "proposal_id": proposal.proposal_id,
+                        "snapshot_path": str(policy_snapshot_path),
+                        "mode": governance["next_step"],
+                    }
+                )
+            elif evaluation["decision"] == "candidate" and governance["next_step"] == "defer_after_rejection":
+                self.transition_knowledge(
+                    record_id=records[index].record_id,
+                    new_state=KnowledgeState.DEFERRED,
+                    reason="candidate deferred after cloud rejection",
                     actor="growth_loop",
                 )
             proposal_reviews.append(
@@ -150,9 +183,10 @@ class GrowthLoop:
                 "type": "policy_change",
                 "id": proposal.proposal_id,
                 "risk": proposal.risk_level,
+                "status": self._approval_status(review["cloud_response"]),
             }
-            for proposal in proposals
-            if proposal.requires_approval
+            for proposal, review in zip(proposals, proposal_reviews)
+            if proposal.requires_approval and self._approval_status(review["cloud_response"]) == "pending"
         ]
 
         self.event_log.append(
@@ -166,6 +200,7 @@ class GrowthLoop:
                 "evaluation_decisions": [review["evaluation"]["decision"] for review in proposal_reviews],
                 "previous_snapshot_id": (previous_snapshot or {}).get("snapshot_id"),
                 "pendingCloudReviews": len(cloud_requests),
+                "policyApplications": len(policy_applications),
             },
         )
 
@@ -206,6 +241,7 @@ class GrowthLoop:
                 "activeByPolicy": sum(1 for review in proposal_reviews if review["evaluation"]["decision"] == "candidate"),
                 "retiredByPolicy": sum(1 for review in proposal_reviews if review["evaluation"]["decision"] == "retire"),
                 "pendingCloudReviews": len(cloud_requests),
+                "policyApplications": len(policy_applications),
             },
             approval_pending=approval_pending,
             date=date,
@@ -231,7 +267,7 @@ class GrowthLoop:
                     "points": [
                         (
                             f"{review['proposal']['proposal_id']}: "
-                            f"{review['evaluation']['decision']} / {review['governance']['next_step']}"
+                            f"{review['evaluation']['decision']} / {review['governance']['next_step']} / approved={review['governance']['approved']}"
                         )
                         for review in proposal_reviews
                     ]
@@ -240,9 +276,17 @@ class GrowthLoop:
                 {
                     "title": "Cloud Evaluation",
                     "points": [
-                        f"{review['proposal']['proposal_id']}: pending={bool(review['cloud_request_path'])}, responded={bool(review['cloud_response'])}"
+                        f"{review['proposal']['proposal_id']}: status={self._approval_status(review['cloud_response'])}, decision={review['governance'].get('cloud_decision') or 'pending'}"
                         for review in proposal_reviews
                         if review["proposal"]["requires_approval"]
+                    ]
+                    or ["none"],
+                },
+                {
+                    "title": "Policy Applications",
+                    "points": [
+                        f"{item['proposal_id']}: {item['mode']} / {item['snapshot_path']}"
+                        for item in policy_applications
                     ]
                     or ["none"],
                 },
@@ -252,7 +296,13 @@ class GrowthLoop:
                     "id": proposal.proposal_id,
                     "summary": proposal.summary,
                     "risk": proposal.risk_level,
-                    "state": "pending_approval" if proposal.requires_approval else "proposed",
+                    "state": (
+                        "approved"
+                        if proposal.proposal_id in {item["proposal_id"] for item in policy_applications}
+                        else "pending_approval"
+                        if proposal.requires_approval
+                        else "proposed"
+                    ),
                 }
                 for proposal in proposals
             ],
@@ -266,6 +316,7 @@ class GrowthLoop:
                 "promotion remains approval-gated",
                 f"proposal delta: {proposal_comparison['proposal_count_delta']}",
                 f"pending cloud reviews: {len(cloud_requests)}",
+                f"policy applications: {len(policy_applications)}",
             ],
         )
 
@@ -283,6 +334,7 @@ class GrowthLoop:
             "proposal_reviews": proposal_reviews,
             "evaluation_decisions": [review["evaluation"]["decision"] for review in proposal_reviews],
             "cloud_requests": cloud_requests,
+            "policy_applications": policy_applications,
         }
 
     def transition_knowledge(
@@ -394,6 +446,45 @@ class GrowthLoop:
         )
         return restored
 
+    def rollback_policies(self, snapshot_id: str) -> dict:
+        restored = self.policy_store.restore_snapshot(snapshot_id)
+        report_date = datetime.now(UTC).date().isoformat()
+        self.event_log.append(
+            "policy_rollback",
+            {
+                "snapshot_id": snapshot_id,
+                "restored_from_snapshot_id": restored.get("restored_from_snapshot_id"),
+                "rule_count": len(restored.get("rules", [])),
+            },
+        )
+        self.report_writer.write_glance(
+            status="policy_rollback_applied",
+            main_points=[
+                f"restored policy snapshot: {snapshot_id}",
+                f"rule count after rollback: {len(restored.get('rules', []))}",
+            ],
+            recommended_interventions=[
+                "compare restored policy state against the next approved proposal",
+                "preserve newer policy snapshots for audit",
+            ],
+            track_summary={"restoredPolicySnapshotId": snapshot_id, "policyRules": len(restored.get("rules", []))},
+            approval_pending=[],
+            date=report_date,
+        )
+        self.report_writer.write_daily(
+            status="policy_rollback_applied",
+            summary=f"policy snapshot restored: {snapshot_id}",
+            sections=[{"title": "Policy Rollback", "points": [f"restored snapshot: {snapshot_id}"]}],
+            proposals=[],
+            date=report_date,
+        )
+        self.report_writer.write_health(
+            status="policy_rollback_applied",
+            approval_pending=[],
+            notes=[f"policy snapshot restored: {snapshot_id}", "policy latest pointer moved to restored snapshot"],
+        )
+        return restored
+
 
 def build_loop(root: Path, worker_service: WorkerService) -> GrowthLoop:
     return GrowthLoop(
@@ -413,6 +504,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", default="/tmp/p1-core-smoke")
     parser.add_argument("--input-text")
     parser.add_argument("--rollback-snapshot-id")
+    parser.add_argument("--rollback-policy-snapshot-id")
     parser.add_argument("--date", default=None)
     return parser.parse_args()
 
@@ -429,9 +521,11 @@ def main() -> None:
     loop = build_loop(root, worker)
     if args.rollback_snapshot_id:
         result = loop.rollback_proposals(args.rollback_snapshot_id)
+    elif args.rollback_policy_snapshot_id:
+        result = loop.rollback_policies(args.rollback_policy_snapshot_id)
     else:
         if not args.input_text:
-            raise SystemExit("--input-text is required unless --rollback-snapshot-id is provided")
+            raise SystemExit("--input-text is required unless --rollback-snapshot-id or --rollback-policy-snapshot-id is provided")
         result = loop.ingest_text(args.input_text, date=args.date)
     print(json.dumps({"ok": True, **result}, ensure_ascii=False, indent=2))
 

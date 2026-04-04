@@ -295,6 +295,9 @@ python3 -m keeper_adapter.cli report --kind daily
 - counterexample がない新規候補が `active` に進むことを確認
 - previous snapshot と重複する候補が `retired` に進むことを確認
 - approval-gated proposal が `state/cloud_evaluation/requests/` に request を積むことを確認
+- cloud review `approve` / `reject` が state transition に反映されることを確認
+- approval 済み proposal が `state/policies/latest-policy.json` と `state/policies/snapshots/` を更新することを確認
+- policy rollback 後に `latest-policy.json` が復元 snapshot を指すことを確認
 - rollback 実行後に `status` が `rollback_applied` を返すことを確認
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-smoke` を使った `keeper_adapter` 読み取り成功
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-loop-smoke` を使った growth loop 出力の `keeper_adapter` 読み取り成功
@@ -330,13 +333,11 @@ python3 -m keeper_adapter.cli report --kind daily
 
 次にやるべきことは以下の順。
 
-1. cloud review response を approval / promotion 決定へ適用する
-2. knowledge state 側の rollback snapshot を追加する
-3. evaluator / governor の判断材料を長期統治ルールへ接続する
-4. report を短期 / 長期統治レイヤで分ける
-5. 実 Ollama を使った end-to-end 検証を追加する
-6. 低リスクな外界アクションを扱う experiment layer を dry-run beyond から進める
-7. 低リスク改善は自律実行、高リスク改善は承認待ちに分ける運用を実装する
+1. evaluator / governor の判断材料を長期統治ルールへ接続する
+2. report を短期 / 長期統治レイヤで分ける
+3. 実 Ollama を使った end-to-end 検証を追加する
+4. 低リスクな外界アクションを扱う experiment layer を dry-run beyond から進める
+5. experiment feedback を長期統治ルール側へ接続する
 
 ## 11. コア完成条件
 
