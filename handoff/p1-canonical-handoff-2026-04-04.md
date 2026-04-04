@@ -313,6 +313,7 @@ python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 - governance profile によって low-risk autonomy を停止できることを確認
 - daily report に `Short-Horizon Governance` と `Long-Horizon Governance` が出力されることを確認
 - unified operator CLI から status / approvals / state を読めることを確認
+- end-to-end lifecycle test で ingest -> policy apply -> CLI visibility -> rollback を確認
 - rollback 実行後に `status` が `rollback_applied` を返すことを確認
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-smoke` を使った `keeper_adapter` 読み取り成功
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-loop-smoke` を使った growth loop 出力の `keeper_adapter` 読み取り成功

@@ -28,6 +28,7 @@ Completion target for this core:
 12. policy-state snapshot application and rollback support
 13. governance-profile connection for evaluator / governor and layered reporting
 14. unified operator CLI for external-core lifecycle access
+15. end-to-end lifecycle integration test across ingest, policy apply, and rollback
 
 ## Adapter strategy
 

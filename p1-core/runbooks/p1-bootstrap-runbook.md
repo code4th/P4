@@ -25,6 +25,8 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
    - `python3 -m p1_core.cli approvals`
    - `python3 -m p1_core.cli state`
    - `python3 -m p1_core.cli ingest --input-text "example observation"`
+8. Run the operator-surface integration check when changing lifecycle code.
+   - `python3 -m unittest tests.test_end_to_end -v`
 
 ## Verified outputs after growth loop
 

@@ -286,6 +286,7 @@ Verified in implementation:
 - evaluator / governor now read a long-horizon governance profile from `state/governance/`
 - short-horizon and long-horizon governance layers are written into daily reports
 - a unified operator CLI now exposes ingest / status / approvals / state / rollback from `p1-core`
+- an end-to-end lifecycle test now verifies ingest -> approval/policy apply -> operator visibility -> rollback
 - `keeper_adapter` reads `glance / daily / approvals` from generated outputs
 
 ## 11. Remaining Work
