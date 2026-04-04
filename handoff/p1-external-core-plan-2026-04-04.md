@@ -30,6 +30,7 @@ Completion target for this core:
 14. unified operator CLI for external-core lifecycle access
 15. end-to-end lifecycle integration test across ingest, policy apply, and rollback
 16. real Ollama verification with a currently installed local model
+17. bounded external action execution for low-risk autonomous proposals
 
 ## Adapter strategy
 
@@ -49,5 +50,4 @@ Completion target for this core:
 
 ## Suggested next increment
 
-1. add an experiment layer for low-risk external actions beyond dry-run recording
-2. connect experiment feedback into longer-horizon governance rules
+1. connect experiment feedback into longer-horizon governance rules

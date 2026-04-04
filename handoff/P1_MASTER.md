@@ -289,14 +289,15 @@ Verified in implementation:
 - an end-to-end lifecycle test now verifies ingest -> approval/policy apply -> operator visibility -> rollback
 - the lifecycle acceptance path now covers both policy rollback and proposal rollback through the operator surface
 - real Ollama verification has been completed with `qwen3:4b-instruct` through both `p1_core.cli` and the HTTP worker
+- low-risk autonomous proposals can now execute a bounded external file action under `state/experiments/actions/`
+- prior experiment outcomes now defer reruns until reviewed
 - `keeper_adapter` reads `glance / daily / approvals` from generated outputs
 
 ## 11. Remaining Work
 
 The next meaningful work is no longer basic skeleton building. It is quality and autonomy work:
 
-1. add an experiment layer for low-risk external actions beyond dry-run recording
-2. let experiment outcomes influence later proposal quality and promotion logic more deeply
+1. let experiment outcomes influence later proposal quality and promotion logic more deeply
 
 ## 12. Supporting Documents
 

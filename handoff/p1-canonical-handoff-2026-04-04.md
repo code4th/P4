@@ -316,6 +316,8 @@ python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 - end-to-end lifecycle test で ingest -> policy apply -> CLI visibility -> rollback を確認
 - end-to-end lifecycle test で proposal rollback まで含めて operator surface の整合を確認
 - 実 Ollama `qwen3:4b-instruct` で `p1_core.cli ingest` と worker `/summarize` が通ることを確認
+- low-risk autonomous proposal が `state/experiments/actions/*.json` に bounded action note を書くことを確認
+- prior experiment outcome が次回 rerun を `deferred` に戻すことを確認
 - rollback 実行後に `status` が `rollback_applied` を返すことを確認
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-smoke` を使った `keeper_adapter` 読み取り成功
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-loop-smoke` を使った growth loop 出力の `keeper_adapter` 読み取り成功
@@ -351,8 +353,7 @@ python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 
 次にやるべきことは以下の順。
 
-1. 低リスクな外界アクションを扱う experiment layer を dry-run beyond から進める
-2. experiment feedback を長期統治ルール側へ接続する
+1. experiment feedback を長期統治ルール側へ接続する
 
 ## 11. コア完成条件
 

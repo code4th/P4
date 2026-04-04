@@ -31,6 +31,9 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 9. Run the real local-model smoke when changing worker/model defaults.
    - `python3 -m p1_core.cli --root /tmp/p1-real-ollama-smoke ingest --model qwen3:4b-instruct --input-text "example observation"`
    - `python3 -m p1_core.worker.ollama_worker --port 8876 --model qwen3:4b-instruct`
+10. Confirm bounded autonomous actions when low-risk proposals are promoted.
+   - inspect `state/experiments/actions/`
+   - inspect `state/experiments/latest-experiment.json`
 
 ## Verified outputs after growth loop
 

@@ -11,6 +11,7 @@ from p1_core.core.knowledge_store import EventLog, KnowledgeStore
 from p1_core.core.critic import Critic
 from p1_core.core.cloud_evaluation import CloudEvaluationStore
 from p1_core.core.evaluator import Evaluator
+from p1_core.core.experiment_runner import ExperimentRunner
 from p1_core.core.governance_store import GovernanceStore
 from p1_core.core.governor import Governor
 from p1_core.core.policy_engine import PolicyEngine
@@ -36,6 +37,7 @@ class GrowthLoop:
     proposal_store: ProposalStore = field(init=False)
     policy_store: PolicyStore = field(init=False)
     governance_store: GovernanceStore = field(init=False)
+    experiment_runner: ExperimentRunner = field(init=False)
 
     def __post_init__(self) -> None:
         self.knowledge_store = KnowledgeStore(self.root / "state" / "knowledge" / "knowledge.jsonl")
@@ -43,6 +45,7 @@ class GrowthLoop:
         self.proposal_store = ProposalStore(self.root / "state" / "proposals")
         self.policy_store = PolicyStore(self.root / "state" / "policies")
         self.governance_store = GovernanceStore(self.root / "state" / "governance")
+        self.experiment_runner = ExperimentRunner(self.root)
 
     @staticmethod
     def _approval_status(cloud_response: dict | None) -> str:
@@ -91,9 +94,11 @@ class GrowthLoop:
         proposal_reviews = []
         cloud_requests = []
         policy_applications = []
+        experiment_results = []
         for index, proposal in enumerate(proposals):
             proposal_dict = asdict(proposal)
             critique = self.critic.critique(proposal.summary, counterexamples=[str(item) for item in counterexamples])
+            previous_experiment = self.experiment_runner.latest_for(proposal.proposal_id)
             state_history = [
                 item.get("state")
                 for item in self.knowledge_store.history_for(records[index].record_id)
@@ -106,6 +111,7 @@ class GrowthLoop:
                     "previous_snapshot_summary": (previous_snapshot or {}).get("summary"),
                     "matched_previous_summary": proposal.summary in previous_summaries,
                     "governance_profile": governance_profile,
+                    "previous_experiment_outcome": (previous_experiment or {}).get("outcome"),
                 },
                 {
                     **proposal_dict,
@@ -170,6 +176,13 @@ class GrowthLoop:
                         "mode": governance["next_step"],
                     }
                 )
+                if governance["next_step"] == "autonomous_apply":
+                    experiment_results.append(
+                        self.experiment_runner.execute_bounded_action(
+                            proposal.proposal_id,
+                            proposal.summary,
+                        )
+                    )
             elif evaluation["decision"] == "candidate" and governance["next_step"] == "defer_after_rejection":
                 self.transition_knowledge(
                     record_id=records[index].record_id,
@@ -185,6 +198,7 @@ class GrowthLoop:
                     "governance": governance,
                     "cloud_request_path": str(cloud_request_path) if cloud_request_path else None,
                     "cloud_response": cloud_response,
+                    "previous_experiment": previous_experiment,
                 }
             )
         state_counts = self.knowledge_store.counts_by_state()
@@ -213,6 +227,7 @@ class GrowthLoop:
                 "pendingCloudReviews": len(cloud_requests),
                 "policyApplications": len(policy_applications),
                 "governanceSnapshotId": governance_profile.get("snapshot_id"),
+                "autonomousExperiments": len(experiment_results),
             },
         )
 
@@ -255,6 +270,7 @@ class GrowthLoop:
                 "pendingCloudReviews": len(cloud_requests),
                 "policyApplications": len(policy_applications),
                 "governanceSnapshotId": governance_profile.get("snapshot_id"),
+                "autonomousExperiments": len(experiment_results),
             },
             approval_pending=approval_pending,
             date=date,
@@ -304,6 +320,14 @@ class GrowthLoop:
                     or ["none"],
                 },
                 {
+                    "title": "Autonomous Experiments",
+                    "points": [
+                        f"{item['proposal_id']}: {item['mode']} / {item['outcome']} / {item['action_path']}"
+                        for item in experiment_results
+                    ]
+                    or ["none"],
+                },
+                {
                     "title": "Short-Horizon Governance",
                     "points": [
                         f"operations.autonomy_enabled={governance_profile.get('operations', {}).get('autonomy_enabled')}",
@@ -346,6 +370,7 @@ class GrowthLoop:
                 f"pending cloud reviews: {len(cloud_requests)}",
                 f"policy applications: {len(policy_applications)}",
                 f"governance snapshot: {governance_profile.get('snapshot_id')}",
+                f"autonomous experiments: {len(experiment_results)}",
             ],
         )
 
@@ -365,6 +390,7 @@ class GrowthLoop:
             "cloud_requests": cloud_requests,
             "policy_applications": policy_applications,
             "governance_snapshot_id": governance_profile.get("snapshot_id"),
+            "experiment_results": experiment_results,
         }
 
     def transition_knowledge(

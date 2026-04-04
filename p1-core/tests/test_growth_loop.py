@@ -54,6 +54,7 @@ class GrowthLoopTests(unittest.TestCase):
             section_titles = [section["title"] for section in daily_payload["sections"]]
             self.assertIn("Governance Review", section_titles)
             self.assertIn("Cloud Evaluation", section_titles)
+            self.assertIn("Autonomous Experiments", section_titles)
             self.assertIn("Short-Horizon Governance", section_titles)
             self.assertIn("Long-Horizon Governance", section_titles)
             health_path = root / "state" / "health.json"
@@ -205,6 +206,35 @@ class GrowthLoopTests(unittest.TestCase):
             counts = loop.knowledge_store.counts_by_state()
             self.assertEqual(counts["active"], 1)
             self.assertEqual(len(result["policy_applications"]), 1)
+            self.assertEqual(len(result["experiment_results"]), 1)
+            self.assertTrue((root / "state" / "experiments" / "latest-experiment.json").exists())
+
+    def test_growth_loop_defers_rerun_after_prior_bounded_experiment(self) -> None:
+        class NoCounterexampleClient:
+            def generate_json(self, system_prompt: str, user_prompt: str) -> dict:
+                if '"task": "draft_lessons"' in user_prompt:
+                    return {
+                        "lessons": ["fresh bounded lesson"],
+                        "counterexamples": [],
+                        "follow_up_questions": ["question"],
+                    }
+                if '"task": "classify"' in user_prompt:
+                    return {"label": "proposal", "confidence": 0.9, "rationale": "bounded"}
+                return {"summary": "baseline summary", "keywords": ["baseline"]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            worker = WorkerService(llm_client=NoCounterexampleClient(), log_dir=root / "logs" / "worker")
+            loop = build_loop(root, worker)
+            first = loop.ingest_text("Observation without counterexamples.", date="2026-04-04")
+            second = loop.ingest_text("Observation without counterexamples.", date="2026-04-05")
+            self.assertEqual(len(first["experiment_results"]), 1)
+            self.assertEqual(len(second["experiment_results"]), 0)
+            self.assertIn("defer", second["evaluation_decisions"])
+            self.assertEqual(
+                second["proposal_reviews"][0]["evaluation"]["reason"],
+                "prior bounded experiment exists and should be reviewed before rerunning",
+            )
 
     def test_growth_loop_retires_obsolete_candidate(self) -> None:
         class ObsoleteClient:

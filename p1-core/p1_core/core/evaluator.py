@@ -8,6 +8,7 @@ class Evaluator:
         state_history = before.get("state_history", [])
         matched_previous_summary = bool(before.get("matched_previous_summary"))
         previous_snapshot_exists = bool(before.get("previous_snapshot_exists"))
+        previous_experiment_outcome = before.get("previous_experiment_outcome")
         governance = before.get("governance_profile", {})
         constitution = governance.get("constitution", {})
         laws = governance.get("laws", {})
@@ -15,6 +16,9 @@ class Evaluator:
         if matched_previous_summary and laws.get("allow_duplicate_retirement", True) is False:
             decision = "defer"
             reason = "duplicate proposal retained for comparison under governance law"
+        elif operations.get("require_comparison_before_rerun", True) and previous_experiment_outcome:
+            decision = "defer"
+            reason = "prior bounded experiment exists and should be reviewed before rerunning"
         elif "obsolete" in after_text or "superseded" in after_text or matched_previous_summary:
             decision = "retire"
             reason = "proposal is obsolete or duplicates a previous snapshot"
