@@ -387,6 +387,8 @@ python3 -m p1_core.bootstrap.generate_openclaw_config_patch --openclaw-home /Use
 python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1
 ```
 
+`openclaw.json` に入れるのは schema-compatible な最小 agent entry のみで、P1 固有の identity/transport 情報は workspace と `~/.openclaw/agents/p1/agent/p1-openclaw-entry.json` に残す。
+
 ## 8. 検証済み事項
 
 この turn で確認済み:

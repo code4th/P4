@@ -28,8 +28,9 @@ class OpenClawConfigPatchTests(unittest.TestCase):
 
             entry = json.loads(entry_path.read_text(encoding="utf-8"))
             self.assertEqual(entry["id"], "p1")
-            self.assertEqual(entry["metadata"]["p1_identity_source"], "external-core-workspace")
-            self.assertEqual(entry["metadata"]["p1_entrypoint"], str(workspace_root / "bin" / "p1-agent"))
+            self.assertEqual(entry["workspace"], str(workspace_root))
+            self.assertEqual(entry["agentDir"], str(root / ".openclaw" / "agents" / "p1" / "agent"))
+            self.assertNotIn("metadata", entry)
             self.assertIn("agents.list", guide_path.read_text(encoding="utf-8"))
 
 

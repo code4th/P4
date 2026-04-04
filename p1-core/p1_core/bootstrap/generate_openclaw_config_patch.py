@@ -21,11 +21,6 @@ def build_agent_entry(*, agent_name: str, workspace_root: Path, openclaw_home: P
             "profile": "full",
             "deny": ["subagents"],
         },
-        "metadata": {
-            "p1_entrypoint": str(workspace_root / "bin" / "p1-agent"),
-            "p1_workspace_manifest": str(workspace_root / "agent" / "manifest.json"),
-            "p1_identity_source": "external-core-workspace",
-        },
     }
 
 
@@ -64,9 +59,10 @@ def generate_patch(
                 f"- Source entry: `{target}`",
                 f"- Agent slot scaffold: `{openclaw_home / 'agents' / agent_name}`",
                 f"- Workspace entrypoint: `{workspace_root / 'bin' / 'p1-agent'}`",
+                f"- Workspace manifest: `{workspace_root / 'agent' / 'manifest.json'}`",
                 "",
                 "Do not move P1 memory, governance, or rollback into OpenClaw config.",
-                "Only register the agent slot and keep P1 identity in the external workspace.",
+                "Only register the minimal agent slot in `openclaw.json` and keep P1 identity details in the external workspace.",
             ]
         )
         + "\n",
