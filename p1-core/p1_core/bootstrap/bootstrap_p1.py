@@ -15,6 +15,7 @@ TEMPLATES = {
     },
     "config.json": {
         "worker_base_url": "http://127.0.0.1:8765",
+        "worker_model": "qwen3:4b-instruct",
         "worker_endpoints": ["/summarize", "/classify", "/draft_lessons"],
         "knowledge_states": ["raw", "candidate", "deferred", "active", "retired"],
         "promotion_mode": "proposal_only",

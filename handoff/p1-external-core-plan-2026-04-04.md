@@ -29,6 +29,7 @@ Completion target for this core:
 13. governance-profile connection for evaluator / governor and layered reporting
 14. unified operator CLI for external-core lifecycle access
 15. end-to-end lifecycle integration test across ingest, policy apply, and rollback
+16. real Ollama verification with a currently installed local model
 
 ## Adapter strategy
 
@@ -48,6 +49,5 @@ Completion target for this core:
 
 ## Suggested next increment
 
-1. run end-to-end verification against a real Ollama worker through the operator CLI
-2. add an experiment layer for low-risk external actions beyond dry-run recording
-3. connect experiment feedback into longer-horizon governance rules
+1. add an experiment layer for low-risk external actions beyond dry-run recording
+2. connect experiment feedback into longer-horizon governance rules

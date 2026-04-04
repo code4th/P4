@@ -545,7 +545,7 @@ def main() -> None:
     args = parse_args()
     root = Path(args.root).expanduser()
     worker = WorkerService(
-        llm_client=OllamaClient(model="qwen2.5:7b"),
+        llm_client=OllamaClient(model="qwen3:4b-instruct"),
         log_dir=root / "logs" / "worker",
     )
     loop = build_loop(root, worker)

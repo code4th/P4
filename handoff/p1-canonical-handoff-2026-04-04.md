@@ -314,6 +314,7 @@ python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 - daily report に `Short-Horizon Governance` と `Long-Horizon Governance` が出力されることを確認
 - unified operator CLI から status / approvals / state を読めることを確認
 - end-to-end lifecycle test で ingest -> policy apply -> CLI visibility -> rollback を確認
+- 実 Ollama `qwen3:4b-instruct` で `p1_core.cli ingest` と worker `/summarize` が通ることを確認
 - rollback 実行後に `status` が `rollback_applied` を返すことを確認
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-smoke` を使った `keeper_adapter` 読み取り成功
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-loop-smoke` を使った growth loop 出力の `keeper_adapter` 読み取り成功
@@ -349,9 +350,8 @@ python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 
 次にやるべきことは以下の順。
 
-1. 実 Ollama を使った end-to-end 検証を追加する
-2. 低リスクな外界アクションを扱う experiment layer を dry-run beyond から進める
-3. experiment feedback を長期統治ルール側へ接続する
+1. 低リスクな外界アクションを扱う experiment layer を dry-run beyond から進める
+2. experiment feedback を長期統治ルール側へ接続する
 
 ## 11. コア完成条件
 

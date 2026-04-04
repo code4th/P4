@@ -87,7 +87,7 @@ def operator_ingest(root: Path, *, input_text: str, model: str) -> dict[str, Any
 
 def operator_rollback(root: Path, *, target: str, snapshot_id: str) -> dict[str, Any]:
     worker = WorkerService(
-        llm_client=OllamaClient(model="qwen2.5:7b"),
+        llm_client=OllamaClient(model="qwen3:4b-instruct"),
         log_dir=root / "logs" / "worker",
     )
     loop = build_loop(root, worker)
@@ -105,7 +105,7 @@ def parse_args() -> argparse.Namespace:
 
     ingest_parser = subparsers.add_parser("ingest", help="Run the growth loop on an input text")
     ingest_parser.add_argument("--input-text", required=True)
-    ingest_parser.add_argument("--model", default="qwen2.5:7b")
+    ingest_parser.add_argument("--model", default="qwen3:4b-instruct")
 
     status_parser = subparsers.add_parser("status", help="Show operator-facing P1 status")
     status_parser.add_argument("--date")

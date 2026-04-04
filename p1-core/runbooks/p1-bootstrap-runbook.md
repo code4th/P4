@@ -10,7 +10,7 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
    - `cd /Users/satojunichi/Documents/openclaw/p1-core`
    - `python3 -m p1_core.bootstrap.bootstrap_p1 --root /Users/satojunichi/.openclaw/workspace/systems/p1`
 2. Start the local worker.
-   - `python3 -m p1_core.worker.ollama_worker --port 8765`
+   - `python3 -m p1_core.worker.ollama_worker --port 8765 --model qwen3:4b-instruct`
 3. Verify health.
    - `curl http://127.0.0.1:8765/health`
 4. Generate initial P1 reports.
@@ -24,9 +24,12 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
    - `python3 -m p1_core.cli status`
    - `python3 -m p1_core.cli approvals`
    - `python3 -m p1_core.cli state`
-   - `python3 -m p1_core.cli ingest --input-text "example observation"`
+   - `python3 -m p1_core.cli ingest --model qwen3:4b-instruct --input-text "example observation"`
 8. Run the operator-surface integration check when changing lifecycle code.
    - `python3 -m unittest tests.test_end_to_end -v`
+9. Run the real local-model smoke when changing worker/model defaults.
+   - `python3 -m p1_core.cli --root /tmp/p1-real-ollama-smoke ingest --model qwen3:4b-instruct --input-text "example observation"`
+   - `python3 -m p1_core.worker.ollama_worker --port 8876 --model qwen3:4b-instruct`
 
 ## Verified outputs after growth loop
 

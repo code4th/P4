@@ -236,7 +236,7 @@ Current operational entrypoints:
 4. Advance P1 core
    - `cd /Users/satojunichi/Documents/openclaw/p1-core`
    - `python3 -m p1_core.pipeline.growth_loop --root /Users/satojunichi/.openclaw/workspace/systems/p1 --input-text "example observation"`
-   - or `python3 -m p1_core.cli ingest --input-text "example observation"`
+   - or `python3 -m p1_core.cli ingest --model qwen3:4b-instruct --input-text "example observation"`
 
 5. Roll back proposal state
    - `python3 -m p1_core.pipeline.growth_loop --root /Users/satojunichi/.openclaw/workspace/systems/p1 --rollback-snapshot-id 2026-04-04-proposals`
@@ -287,15 +287,15 @@ Verified in implementation:
 - short-horizon and long-horizon governance layers are written into daily reports
 - a unified operator CLI now exposes ingest / status / approvals / state / rollback from `p1-core`
 - an end-to-end lifecycle test now verifies ingest -> approval/policy apply -> operator visibility -> rollback
+- real Ollama verification has been completed with `qwen3:4b-instruct` through both `p1_core.cli` and the HTTP worker
 - `keeper_adapter` reads `glance / daily / approvals` from generated outputs
 
 ## 11. Remaining Work
 
 The next meaningful work is no longer basic skeleton building. It is quality and autonomy work:
 
-1. run end-to-end verification against a real Ollama worker
-2. add an experiment layer for low-risk external actions beyond dry-run recording
-3. let experiment outcomes influence later proposal quality and promotion logic more deeply
+1. add an experiment layer for low-risk external actions beyond dry-run recording
+2. let experiment outcomes influence later proposal quality and promotion logic more deeply
 
 ## 12. Supporting Documents
 
