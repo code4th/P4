@@ -193,6 +193,86 @@ Key files:
 - [service.py](/Users/satojunichi/Documents/openclaw/p1-core/p1_core/worker/service.py)
 - [ollama_client.py](/Users/satojunichi/Documents/openclaw/p1-core/p1_core/worker/ollama_client.py)
 
+### 5.2.1 Local Model Role Split
+
+The current local-model direction is now clearer from real-machine verification on:
+
+- Apple M5
+- 32 GB RAM
+- Ollama 0.20.2
+
+The practical split should be:
+
+- lightweight local model
+  - flexible judgment beyond fixed `if` statements
+  - tagging, coarse classification, candidate extraction, log shaping, cheap routing
+- medium local model
+  - background summarization, counterexample enumeration, rough lesson drafting, nightly batch review
+- heavy local model
+  - slow background analysis, audit passes, proposal comparison, deferred-case re-review
+
+Operational interpretation:
+
+- local heavy models are not the main conversational brain
+- local heavy models are suitable as asynchronous background cognition when latency is acceptable
+- cloud models remain the final layer for high-stakes promotion or institutional change
+
+### 5.2.2 Verified Ollama Model Findings
+
+Real-machine checks in this fork validated the following:
+
+- `qwen3:4b-instruct`
+  - currently the strongest default candidate for fast auxiliary cognition
+- `gemma4:e4b`
+  - runs on this machine and is viable for slower background work
+- `gemma4:26b`
+  - also runs on this machine and loads at `100% GPU`
+  - should be treated as a background-analysis model, not an interactive default
+
+Observed direct strict-JSON summarize timings:
+
+- `qwen3:4b-instruct`: about 3.9s
+- `gemma4:e4b`: about 10.7s
+- `gemma4:26b`: about 38.7s
+
+Observed worker-task timings with an expanded timeout:
+
+- `qwen3:4b-instruct`
+  - `summarize`: about 8.1s
+  - `classify`: about 144.8s
+  - `draft_lessons`: about 66.3s
+- `gemma4:e4b`
+  - `summarize`: about 52.5s
+  - `classify`: about 63.4s
+  - `draft_lessons`: about 60.2s
+- `gemma4:26b`
+  - `summarize`: about 35.7s
+  - `classify`: about 106.8s
+  - `draft_lessons`: timed out at 180s
+
+Immediate consequence:
+
+- current worker/CLI timeout assumptions are tuned for smaller models and should not be treated as a stable contract for background cognition
+- heavy local models are still useful, but only when scheduled as queue-backed or batch-style work
+
+### 5.2.3 Implementation Direction From These Findings
+
+Main-thread work should treat local-model usage as three classes:
+
+- `fast_judge`
+  - low-latency local routing and flexible rule-like judgment
+  - default candidate: `qwen3:4b-instruct`
+- `background_analysis`
+  - asynchronous lesson drafting, counterexample scans, deferred-case review, audit passes
+  - candidate models: `gemma4:e4b`, `gemma4:26b`
+- `cloud_decision`
+  - final institutional approval, promotion, rejection, or policy change
+
+Important:
+
+- do not force heavier local models through the same synchronous interaction path as the fast auxiliary model
+- instead, give them background-job semantics with queueing, longer time budgets, and delayed result pickup
+
 ### 5.3 Bootstrap
 
 External workspace scaffolding:

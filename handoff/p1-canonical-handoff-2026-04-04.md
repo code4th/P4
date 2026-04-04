@@ -150,6 +150,35 @@ endpoint:
 - リクエストとレスポンスを JSONL でログ保存する
 - 不確実性を潰さずに候補抽出する
 
+追記:
+
+ローカルモデルの役割分担は、単一の「速い/遅い」ではなく、以下の 3 層として扱う。
+
+- `fast_judge`
+  - if 文より柔らかい判定
+  - routing、タグ付け、軽い分類、候補抽出
+- `background_analysis`
+  - 時間がかかってよい非同期処理
+  - lesson draft、反例列挙、deferred の再審査、夜間バッチ
+- `cloud_decision`
+  - 最終承認、制度変更、昇格 / 棄却の確定
+
+この fork での実機検証では、以下を確認した。
+
+- 実機: Apple M5 / 32 GB / Ollama 0.20.2
+- `qwen3:4b-instruct`
+  - fast auxiliary cognition の第一候補
+- `gemma4:e4b`
+  - background_analysis 用として現実的
+- `gemma4:26b`
+  - `100% GPU` でロード可能
+  - interactive default ではなく background_analysis 用
+
+要点:
+
+- 重いローカルモデルは「会話の補助」ではなく「非同期の裏方脳」として使う
+- したがって main thread は timeout を延ばすだけでなく、job queue 的な扱いを設計対象に含める
+
 ### 5.3 P1 bootstrap
 
 OpenClaw 内部生成に依存せず、外部から P1 workspace を生成する scaffold を追加。
@@ -246,6 +275,19 @@ OpenClaw 内部生成に依存せず、外部から P1 workspace を生成する
 - `state/reports/daily/*-glance.json`
 - `state/reports/daily/*-daily.json`
 - `state/health.json`
+
+補足:
+
+現在の `ingest` は同期経路として組まれているため、`gemma4:e4b` や `gemma4:26b` のような重いローカルモデルをそのまま interactive path に流すと timeout 設計と衝突しやすい。
+
+したがって次の main-thread 設計では:
+
+- fast path
+  - `summarize` や軽い classify を即時返す
+- background path
+  - 重い `draft_lessons`、再評価、監査、比較を queue 化する
+
+という分岐を前提にすること。
 
 ## 6. 現在の directory 境界
 

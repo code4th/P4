@@ -40,10 +40,18 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 10. Run the real local-model smoke when changing worker/model defaults.
    - `python3 -m p1_core.cli --root /tmp/p1-real-ollama-smoke ingest --model qwen3:4b-instruct --input-text "example observation"`
    - `python3 -m p1_core.worker.ollama_worker --port 8876 --model qwen3:4b-instruct`
-11. Confirm bounded autonomous actions when low-risk proposals are promoted.
+11. When validating heavier local models, do not assume the synchronous operator path is the right target.
+   - use direct worker or client checks first
+   - prefer longer time budgets for `gemma4:e4b` and `gemma4:26b`
+   - treat them as background-analysis candidates rather than interactive defaults
+12. Use this provisional model-role split until a queue-backed job runner exists.
+   - `qwen3:4b-instruct` for `fast_judge`
+   - `gemma4:e4b` for `background_analysis`
+   - `gemma4:26b` only for slow background analysis and audit-style work
+13. Confirm bounded autonomous actions when low-risk proposals are promoted.
    - inspect `state/experiments/actions/`
    - inspect `state/experiments/latest-experiment.json`
-12. Inspect long-horizon governance feedback when rerun deferrals accumulate.
+14. Inspect long-horizon governance feedback when rerun deferrals accumulate.
    - inspect `state/governance/latest-governance.json`
 
 ## Verified outputs after growth loop
