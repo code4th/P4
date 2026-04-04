@@ -44,6 +44,7 @@ class GrowthLoopTests(unittest.TestCase):
             proposal_payload = json.loads(proposal_path.read_text(encoding="utf-8"))
             self.assertIn("proposal_reviews", proposal_payload)
             self.assertEqual(len(result["proposal_reviews"]), 2)
+            self.assertEqual(len(result["cloud_requests"]), 2)
             snapshot_path = root / "state" / "proposals" / "snapshots" / "2026-04-04-proposals.json"
             self.assertTrue(snapshot_path.exists())
             glance_path = root / "state" / "reports" / "daily" / "2026-04-04-glance.json"
@@ -51,10 +52,13 @@ class GrowthLoopTests(unittest.TestCase):
             daily_payload = json.loads((root / "state" / "reports" / "daily" / "2026-04-04-daily.json").read_text(encoding="utf-8"))
             section_titles = [section["title"] for section in daily_payload["sections"]]
             self.assertIn("Governance Review", section_titles)
+            self.assertIn("Cloud Evaluation", section_titles)
             health_path = root / "state" / "health.json"
             self.assertTrue(health_path.exists())
             event_log = root / "state" / "events" / "event-log.jsonl"
             self.assertTrue(event_log.exists())
+            cloud_request = root / "state" / "cloud_evaluation" / "requests"
+            self.assertTrue(cloud_request.exists())
 
     def test_growth_loop_transitions_knowledge_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

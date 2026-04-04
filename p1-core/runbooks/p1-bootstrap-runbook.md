@@ -39,6 +39,7 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 - governance review is written into proposal snapshots and daily reports
 - rollback updates `glance`, `daily`, and `health` so bridge-visible state stays aligned
 - evaluator considers previous snapshot duplication and state history for `active / deferred / retired`
+- approval-gated proposals emit cloud-review request files under `state/cloud_evaluation/requests/`
 
 ## Rollback
 

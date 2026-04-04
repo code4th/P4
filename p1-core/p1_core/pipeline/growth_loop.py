@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from p1_core.core.knowledge_store import EventLog, KnowledgeStore
 from p1_core.core.critic import Critic
+from p1_core.core.cloud_evaluation import CloudEvaluationStore
 from p1_core.core.evaluator import Evaluator
 from p1_core.core.governor import Governor
 from p1_core.core.policy_engine import PolicyEngine
@@ -25,6 +26,7 @@ class GrowthLoop:
     report_writer: ReportWriter
     policy_engine: PolicyEngine
     critic: Critic
+    cloud_evaluation_store: CloudEvaluationStore
     evaluator: Evaluator
     governor: Governor
     knowledge_store: KnowledgeStore = field(init=False)
@@ -69,6 +71,7 @@ class GrowthLoop:
             for lesson in lessons
         ]
         proposal_reviews = []
+        cloud_requests = []
         for index, proposal in enumerate(proposals):
             proposal_dict = asdict(proposal)
             critique = self.critic.critique(proposal.summary, counterexamples=[str(item) for item in counterexamples])
@@ -90,6 +93,25 @@ class GrowthLoop:
                 },
             )
             governance = self.governor.gate({**proposal_dict, "evaluation": evaluation, "critique": critique})
+            cloud_response = None
+            cloud_request_path = None
+            if proposal.requires_approval:
+                cloud_request_path = self.cloud_evaluation_store.queue_request(
+                    proposal.proposal_id,
+                    {
+                        "proposal": proposal_dict,
+                        "critique": critique,
+                        "evaluation": evaluation,
+                        "governance": governance,
+                    },
+                )
+                cloud_response = self.cloud_evaluation_store.load_response(proposal.proposal_id)
+                if cloud_response:
+                    governance = {
+                        **governance,
+                        "cloud_decision": cloud_response,
+                    }
+                cloud_requests.append(str(cloud_request_path))
             if evaluation["decision"] == "defer":
                 self.transition_knowledge(
                     record_id=records[index].record_id,
@@ -117,6 +139,8 @@ class GrowthLoop:
                     "critique": critique,
                     "evaluation": evaluation,
                     "governance": governance,
+                    "cloud_request_path": str(cloud_request_path) if cloud_request_path else None,
+                    "cloud_response": cloud_response,
                 }
             )
         state_counts = self.knowledge_store.counts_by_state()
@@ -141,6 +165,7 @@ class GrowthLoop:
                 "reviewed_proposals": len(proposal_reviews),
                 "evaluation_decisions": [review["evaluation"]["decision"] for review in proposal_reviews],
                 "previous_snapshot_id": (previous_snapshot or {}).get("snapshot_id"),
+                "pendingCloudReviews": len(cloud_requests),
             },
         )
 
@@ -180,6 +205,7 @@ class GrowthLoop:
                 "deferredByPolicy": sum(1 for review in proposal_reviews if review["evaluation"]["decision"] == "defer"),
                 "activeByPolicy": sum(1 for review in proposal_reviews if review["evaluation"]["decision"] == "candidate"),
                 "retiredByPolicy": sum(1 for review in proposal_reviews if review["evaluation"]["decision"] == "retire"),
+                "pendingCloudReviews": len(cloud_requests),
             },
             approval_pending=approval_pending,
             date=date,
@@ -203,8 +229,20 @@ class GrowthLoop:
                 {
                     "title": "Governance Review",
                     "points": [
-                        f"{review['proposal']['proposal_id']}: {review['evaluation']['decision']} / {review['governance']['next_step']}"
+                        (
+                            f"{review['proposal']['proposal_id']}: "
+                            f"{review['evaluation']['decision']} / {review['governance']['next_step']}"
+                        )
                         for review in proposal_reviews
+                    ]
+                    or ["none"],
+                },
+                {
+                    "title": "Cloud Evaluation",
+                    "points": [
+                        f"{review['proposal']['proposal_id']}: pending={bool(review['cloud_request_path'])}, responded={bool(review['cloud_response'])}"
+                        for review in proposal_reviews
+                        if review["proposal"]["requires_approval"]
                     ]
                     or ["none"],
                 },
@@ -227,6 +265,7 @@ class GrowthLoop:
                 "knowledge candidates persisted",
                 "promotion remains approval-gated",
                 f"proposal delta: {proposal_comparison['proposal_count_delta']}",
+                f"pending cloud reviews: {len(cloud_requests)}",
             ],
         )
 
@@ -243,6 +282,7 @@ class GrowthLoop:
             "proposal_comparison": proposal_comparison,
             "proposal_reviews": proposal_reviews,
             "evaluation_decisions": [review["evaluation"]["decision"] for review in proposal_reviews],
+            "cloud_requests": cloud_requests,
         }
 
     def transition_knowledge(
@@ -362,6 +402,7 @@ def build_loop(root: Path, worker_service: WorkerService) -> GrowthLoop:
         report_writer=ReportWriter(root),
         policy_engine=PolicyEngine(),
         critic=Critic(),
+        cloud_evaluation_store=CloudEvaluationStore(root / "state" / "cloud_evaluation"),
         evaluator=Evaluator(),
         governor=Governor(),
     )

@@ -194,6 +194,7 @@ OpenClaw 内部生成に依存せず、外部から P1 workspace を生成する
 - proposal snapshot 永続化
 - proposal snapshot 比較
 - governance review
+- cloud-side evaluation request queue
 - glance / daily / health report 出力
 - event log 追記
 
@@ -293,6 +294,7 @@ python3 -m keeper_adapter.cli report --kind daily
 - counterexample または high-risk 提案が自動で `deferred` に落ちることを確認
 - counterexample がない新規候補が `active` に進むことを確認
 - previous snapshot と重複する候補が `retired` に進むことを確認
+- approval-gated proposal が `state/cloud_evaluation/requests/` に request を積むことを確認
 - rollback 実行後に `status` が `rollback_applied` を返すことを確認
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-smoke` を使った `keeper_adapter` 読み取り成功
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-loop-smoke` を使った growth loop 出力の `keeper_adapter` 読み取り成功
@@ -328,12 +330,12 @@ python3 -m keeper_adapter.cli report --kind daily
 
 次にやるべきことは以下の順。
 
-1. approval gate を cloud-side evaluation と接続する
+1. cloud review response を approval / promotion 決定へ適用する
 2. knowledge state 側の rollback snapshot を追加する
 3. evaluator / governor の判断材料を長期統治ルールへ接続する
 4. report を短期 / 長期統治レイヤで分ける
 5. 実 Ollama を使った end-to-end 検証を追加する
-6. 低リスクな外界アクションを扱う experiment layer を追加する
+6. 低リスクな外界アクションを扱う experiment layer を dry-run beyond から進める
 7. 低リスク改善は自律実行、高リスク改善は承認待ちに分ける運用を実装する
 
 ## 11. コア完成条件

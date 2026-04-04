@@ -22,8 +22,9 @@ Completion target for this core:
 6. knowledge state transition support and proposal snapshot comparison
 7. governance review wiring through critic / evaluator / governor
 8. evaluator strengthened with previous snapshot and state-history comparison
-9. minimal external core module layout
-10. repeatable runbooks and rollback notes
+9. cloud-side evaluation request/response contract for approval-gated proposals
+10. minimal external core module layout
+11. repeatable runbooks and rollback notes
 
 ## Adapter strategy
 
@@ -34,6 +35,7 @@ Completion target for this core:
 - persist execution audit data to `state/events/event-log.jsonl`
 - persist proposal snapshots to `state/proposals/latest-proposals.json`
 - persist governance review inside proposal snapshots and daily reports
+- emit cloud review requests under `state/cloud_evaluation/requests/` without hardwiring a live API
 - let OpenClaw call only:
   - report reads
   - health reads
@@ -42,8 +44,8 @@ Completion target for this core:
 
 ## Suggested next increment
 
-1. connect cloud-side evaluation to approval and promotion decisions
+1. apply cloud review responses back into approval and promotion decisions
 2. formalize rollback of knowledge state as well as proposal state
 3. connect evaluator / governor decisions to longer-horizon governance rules
 4. run end-to-end verification against a real Ollama worker
-5. add an experiment layer for low-risk external actions and self-improvement trials
+5. add an experiment layer for low-risk external actions beyond dry-run recording
