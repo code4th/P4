@@ -8,6 +8,11 @@ Date: 2026-04-04
 
 - [handoff/p1-main-thread-catchup-2026-04-04.md](/Users/satojunichi/Documents/openclaw/handoff/p1-main-thread-catchup-2026-04-04.md)
 
+補足:
+
+この canonical handoff は、外部コア実装の現状整理としては正しい。
+ただし、今後の main-thread 実装は「external-core-first UX」をそのまま完成形と見なさず、「OpenClaw 上の separate P1 agent interface を前面に置く」方向へ進めること。
+
 ## 1. 最上位目的
 
 このプロジェクトの主目的は AI フレームワークを作ることではない。
@@ -60,6 +65,9 @@ P1 は OpenClaw を利用する独立個体であり、以下を満たす。
 - 学び候補抽出、知識状態管理、批評ログ、運用ルール変更提案ができる
 - 将来的に自律成長の中核個体になる
 
+ここでいう「独立した会話インターフェース」は、最終的には OpenClaw 上でメインと並列に見える agent interface を意味する。
+現在の `p1_core.cli` や `bin/p1` はその代替入口であり、完成形の UX ではない。
+
 ## 4. OpenClaw との責務分離
 
 OpenClaw が持つ責務:
@@ -87,6 +95,11 @@ P1 外部コアが持つ責務:
 ## 5. 実装済みの現在地
 
 2026-04-04 時点で、以下を追加済み。
+
+重要:
+
+- ここで完成しているのは external core の制度層
+- main thread の次工程は OpenClaw-facing P1 interface の本実装
 
 ### 5.1 `p1-core/`
 

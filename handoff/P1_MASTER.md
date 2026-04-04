@@ -7,6 +7,11 @@ Main-thread catch-up:
 
 - [p1-main-thread-catchup-2026-04-04.md](/Users/satojunichi/Documents/openclaw/handoff/p1-main-thread-catchup-2026-04-04.md)
 
+Interface correction:
+
+- the currently implemented external-core operator surface is useful, but it is not the final intended front-end
+- the desired day-to-day interface is an OpenClaw-visible separate P1 agent, with the external core behind it as memory, governance, and rollback substrate
+
 ## 1. Purpose
 
 This project is not primarily about building an AI framework.
@@ -92,6 +97,23 @@ Hard prohibition:
 - do not grow an independent policy engine inside OpenClaw-side adapter code
 - do not re-implement P1 judgment inside `keeper_adapter`
 
+## 4.5 Interface Direction Correction
+
+The external-core-first implementation was useful as a bootstrap path, but the intended operator experience is different.
+
+The desired steady-state shape is:
+
+- P1 appears as a separate agent interface on the OpenClaw side
+- P1 uses LLM-backed reasoning as its main conversational and operational loop
+- OpenClaw is used as the practical runtime surface for that agent
+- the external core remains the place for memory, governance, audit, comparison, and rollback
+
+Therefore:
+
+- `p1-core` should be treated as the institutional substrate behind P1
+- OpenClaw-facing P1 interface work is now first-class, not optional polish
+- local worker infrastructure is auxiliary, not the final identity of P1
+
 ## 5. Current Architecture
 
 ### 5.1 Main Components
@@ -102,6 +124,12 @@ Hard prohibition:
   - thin OpenClaw-side bridge
 - `handoff/`
   - planning, constraints, operating rules, and supporting notes
+
+Current interpretation:
+
+- `p1-core/` is already a viable governance and memory substrate
+- the next main-thread implementation focus should be the OpenClaw-facing P1 agent interface
+- `bin/p1` is only a temporary operator wrapper, not the final UX target
 
 ### 5.2 Worker
 
