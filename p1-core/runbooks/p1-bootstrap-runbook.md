@@ -20,6 +20,11 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 6. Use OpenClaw only through a thin adapter.
    - read files in `state/reports/`
    - invoke `intervene.js`
+7. Use the unified operator CLI for external-core operations.
+   - `python3 -m p1_core.cli status`
+   - `python3 -m p1_core.cli approvals`
+   - `python3 -m p1_core.cli state`
+   - `python3 -m p1_core.cli ingest --input-text "example observation"`
 
 ## Verified outputs after growth loop
 

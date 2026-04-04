@@ -27,6 +27,7 @@ Completion target for this core:
 11. repeatable runbooks and rollback notes
 12. policy-state snapshot application and rollback support
 13. governance-profile connection for evaluator / governor and layered reporting
+14. unified operator CLI for external-core lifecycle access
 
 ## Adapter strategy
 
@@ -46,6 +47,6 @@ Completion target for this core:
 
 ## Suggested next increment
 
-1. run end-to-end verification against a real Ollama worker
+1. run end-to-end verification against a real Ollama worker through the operator CLI
 2. add an experiment layer for low-risk external actions beyond dry-run recording
 3. connect experiment feedback into longer-horizon governance rules

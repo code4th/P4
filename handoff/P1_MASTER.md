@@ -224,19 +224,25 @@ Current operational entrypoints:
 1. Read P1 status
    - `cd /Users/satojunichi/Documents/openclaw`
    - `python3 -m keeper_adapter.cli status`
+   - or `cd /Users/satojunichi/Documents/openclaw/p1-core && python3 -m p1_core.cli status`
 
 2. Read detailed report
    - `python3 -m keeper_adapter.cli report --kind daily`
 
 3. Read approval-pending items
    - `python3 -m keeper_adapter.cli approvals`
+   - or `python3 -m p1_core.cli approvals`
 
 4. Advance P1 core
    - `cd /Users/satojunichi/Documents/openclaw/p1-core`
    - `python3 -m p1_core.pipeline.growth_loop --root /Users/satojunichi/.openclaw/workspace/systems/p1 --input-text "example observation"`
+   - or `python3 -m p1_core.cli ingest --input-text "example observation"`
 
 5. Roll back proposal state
    - `python3 -m p1_core.pipeline.growth_loop --root /Users/satojunichi/.openclaw/workspace/systems/p1 --rollback-snapshot-id 2026-04-04-proposals`
+
+6. Inspect unified external-core state
+   - `python3 -m p1_core.cli state`
 
 Current limitation:
 
@@ -279,6 +285,7 @@ Verified in implementation:
 - policy snapshots can be rolled back through a current-pointer restore path
 - evaluator / governor now read a long-horizon governance profile from `state/governance/`
 - short-horizon and long-horizon governance layers are written into daily reports
+- a unified operator CLI now exposes ingest / status / approvals / state / rollback from `p1-core`
 - `keeper_adapter` reads `glance / daily / approvals` from generated outputs
 
 ## 11. Remaining Work

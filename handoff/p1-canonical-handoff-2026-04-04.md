@@ -280,6 +280,18 @@ python3 -m keeper_adapter.cli approvals
 python3 -m keeper_adapter.cli report --kind daily
 ```
 
+### 7.8 外部コア operator CLI から扱う
+
+```bash
+cd /Users/satojunichi/Documents/openclaw/p1-core
+python3 -m p1_core.cli status
+python3 -m p1_core.cli approvals
+python3 -m p1_core.cli state
+python3 -m p1_core.cli ingest --input-text "example observation"
+python3 -m p1_core.cli rollback --target proposals --snapshot-id 2026-04-04-proposals
+python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
+```
+
 ## 8. 検証済み事項
 
 この turn で確認済み:
@@ -300,6 +312,7 @@ python3 -m keeper_adapter.cli report --kind daily
 - policy rollback 後に `latest-policy.json` が復元 snapshot を指すことを確認
 - governance profile によって low-risk autonomy を停止できることを確認
 - daily report に `Short-Horizon Governance` と `Long-Horizon Governance` が出力されることを確認
+- unified operator CLI から status / approvals / state を読めることを確認
 - rollback 実行後に `status` が `rollback_applied` を返すことを確認
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-smoke` を使った `keeper_adapter` 読み取り成功
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-loop-smoke` を使った growth loop 出力の `keeper_adapter` 読み取り成功
