@@ -2,6 +2,12 @@
 
 Date: 2026-04-04
 
+## 0. Main Thread Catch-Up
+
+メインスレッドが短時間で差分を把握したい場合は、先に以下を読む。
+
+- [handoff/p1-main-thread-catchup-2026-04-04.md](/Users/satojunichi/Documents/openclaw/handoff/p1-main-thread-catchup-2026-04-04.md)
+
 ## 1. 最上位目的
 
 このプロジェクトの主目的は AI フレームワークを作ることではない。

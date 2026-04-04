@@ -3,6 +3,10 @@
 Date: 2026-04-04
 Status: Single source of truth for P1 external-core work
 
+Main-thread catch-up:
+
+- [p1-main-thread-catchup-2026-04-04.md](/Users/satojunichi/Documents/openclaw/handoff/p1-main-thread-catchup-2026-04-04.md)
+
 ## 1. Purpose
 
 This project is not primarily about building an AI framework.
