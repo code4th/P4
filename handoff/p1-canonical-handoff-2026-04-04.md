@@ -248,7 +248,7 @@ python3 -m p1_core.bootstrap.bootstrap_p1 --root /Users/satojunichi/.openclaw/wo
 
 ```bash
 cd /Users/satojunichi/Documents/openclaw/p1-core
-python3 -m p1_core.worker.ollama_worker --port 8765
+python3 -m p1_core.worker.ollama_worker --port 8765 --model qwen3:4b-instruct
 ```
 
 ### 7.4 health 確認
@@ -287,7 +287,7 @@ cd /Users/satojunichi/Documents/openclaw/p1-core
 python3 -m p1_core.cli status
 python3 -m p1_core.cli approvals
 python3 -m p1_core.cli state
-python3 -m p1_core.cli ingest --input-text "example observation"
+python3 -m p1_core.cli ingest --model qwen3:4b-instruct --input-text "example observation"
 python3 -m p1_core.cli rollback --target proposals --snapshot-id 2026-04-04-proposals
 python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 ```

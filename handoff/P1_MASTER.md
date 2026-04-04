@@ -136,10 +136,13 @@ Key file:
 - event log
 - knowledge store
 - policy engine
+- policy store
 - critic
 - proposer
 - evaluator
 - governor
+- governance store
+- experiment runner
 - proposal store
 
 Key files:
@@ -147,9 +150,12 @@ Key files:
 - [knowledge_store.py](/Users/satojunichi/Documents/openclaw/p1-core/p1_core/core/knowledge_store.py)
 - [proposal_store.py](/Users/satojunichi/Documents/openclaw/p1-core/p1_core/core/proposal_store.py)
 - [policy_engine.py](/Users/satojunichi/Documents/openclaw/p1-core/p1_core/core/policy_engine.py)
+- [policy_store.py](/Users/satojunichi/Documents/openclaw/p1-core/p1_core/core/policy_store.py)
 - [critic.py](/Users/satojunichi/Documents/openclaw/p1-core/p1_core/core/critic.py)
 - [evaluator.py](/Users/satojunichi/Documents/openclaw/p1-core/p1_core/core/evaluator.py)
 - [governor.py](/Users/satojunichi/Documents/openclaw/p1-core/p1_core/core/governor.py)
+- [governance_store.py](/Users/satojunichi/Documents/openclaw/p1-core/p1_core/core/governance_store.py)
+- [experiment_runner.py](/Users/satojunichi/Documents/openclaw/p1-core/p1_core/core/experiment_runner.py)
 
 ### 5.5 Growth Loop
 
@@ -164,6 +170,9 @@ The current minimal growth loop already performs:
 - proposal comparison against previous snapshot
 - governance review
 - rollback of proposal snapshots
+- policy-state application and rollback
+- governance-profile loading
+- bounded autonomous experiment execution
 - report generation for bridge consumption
 
 Key file:
@@ -176,6 +185,11 @@ Outputs:
 - `state/events/event-log.jsonl`
 - `state/proposals/latest-proposals.json`
 - `state/proposals/snapshots/*.json`
+- `state/policies/latest-policy.json`
+- `state/policies/snapshots/*.json`
+- `state/governance/latest-governance.json`
+- `state/experiments/latest-experiment.json`
+- `state/experiments/actions/*.json`
 - `state/reports/daily/*-glance.json`
 - `state/reports/daily/*-daily.json`
 - `state/health.json`
@@ -241,7 +255,10 @@ Current operational entrypoints:
 5. Roll back proposal state
    - `python3 -m p1_core.pipeline.growth_loop --root /Users/satojunichi/.openclaw/workspace/systems/p1 --rollback-snapshot-id 2026-04-04-proposals`
 
-6. Inspect unified external-core state
+6. Roll back policy state
+   - `python3 -m p1_core.pipeline.growth_loop --root /Users/satojunichi/.openclaw/workspace/systems/p1 --rollback-policy-snapshot-id baseline-policy`
+
+7. Inspect unified external-core state
    - `python3 -m p1_core.cli state`
 
 Current limitation:
@@ -280,7 +297,6 @@ Verified in implementation:
 - governance review is written into snapshots and daily reports
 - rollback updates proposal latest pointer and bridge-visible state
 - cloud review `approve` / `reject` responses are applied during governance
-- knowledge state snapshots can be restored without deleting append-only history
 - approved proposals can mutate versioned policy state under `state/policies/`
 - policy snapshots can be rolled back through a current-pointer restore path
 - evaluator / governor now read a long-horizon governance profile from `state/governance/`
