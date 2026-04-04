@@ -1,0 +1,25 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from p1_core.bootstrap.bootstrap_p1 import scaffold_workspace
+
+
+class BootstrapTests(unittest.TestCase):
+    def test_scaffold_workspace_creates_expected_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "p1"
+            scaffold_workspace(root)
+            self.assertTrue((root / "profile.json").exists())
+            self.assertTrue((root / "config.json").exists())
+            self.assertTrue((root / "prompt.md").exists())
+            self.assertTrue((root / "runbook.md").exists())
+            config = json.loads((root / "config.json").read_text(encoding="utf-8"))
+            self.assertEqual(config["promotion_mode"], "proposal_only")
+
+
+if __name__ == "__main__":
+    unittest.main()
