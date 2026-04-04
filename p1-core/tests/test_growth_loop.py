@@ -54,6 +54,8 @@ class GrowthLoopTests(unittest.TestCase):
             section_titles = [section["title"] for section in daily_payload["sections"]]
             self.assertIn("Governance Review", section_titles)
             self.assertIn("Cloud Evaluation", section_titles)
+            self.assertIn("Short-Horizon Governance", section_titles)
+            self.assertIn("Long-Horizon Governance", section_titles)
             health_path = root / "state" / "health.json"
             self.assertTrue(health_path.exists())
             event_log = root / "state" / "events" / "event-log.jsonl"
@@ -130,6 +132,56 @@ class GrowthLoopTests(unittest.TestCase):
             self.assertEqual(restored_policy["snapshot_id"], "baseline-policy")
             self.assertEqual(restored_policy["rules"], [])
             self.assertNotEqual(snapshot_id, "baseline-policy")
+
+    def test_growth_loop_respects_governance_autonomy_freeze(self) -> None:
+        class BoundedClient:
+            def generate_json(self, system_prompt: str, user_prompt: str) -> dict:
+                if '"task": "draft_lessons"' in user_prompt:
+                    return {
+                        "lessons": ["fresh bounded lesson"],
+                        "counterexamples": [],
+                        "follow_up_questions": ["question"],
+                    }
+                if '"task": "classify"' in user_prompt:
+                    return {"label": "proposal", "confidence": 0.9, "rationale": "bounded"}
+                return {"summary": "baseline summary", "keywords": ["baseline"]}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            governance_path = root / "state" / "governance" / "latest-governance.json"
+            governance_path.parent.mkdir(parents=True, exist_ok=True)
+            governance_path.write_text(
+                json.dumps(
+                    {
+                        "snapshot_id": "frozen-autonomy",
+                        "constitution": {
+                            "preserve_counterexamples": True,
+                            "preserve_logs": True,
+                            "require_auditability": True,
+                        },
+                        "laws": {
+                            "high_risk_requires_cloud_approval": True,
+                            "medium_risk_requires_cloud_approval": True,
+                            "allow_duplicate_retirement": True,
+                        },
+                        "operations": {
+                            "autonomy_enabled": False,
+                            "max_autonomous_risk": "low",
+                            "require_comparison_before_rerun": True,
+                        },
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
+            worker = WorkerService(llm_client=BoundedClient(), log_dir=root / "logs" / "worker")
+            loop = build_loop(root, worker)
+            result = loop.ingest_text("Observation without counterexamples.", date="2026-04-04")
+            self.assertEqual(result["governance_snapshot_id"], "frozen-autonomy")
+            self.assertEqual(result["policy_applications"], [])
+            self.assertEqual(loop.knowledge_store.counts_by_state()["candidate"], 1)
+            self.assertEqual(result["proposal_reviews"][0]["governance"]["next_step"], "await_governance_update")
 
     def test_growth_loop_promotes_counterexample_free_candidate_to_active(self) -> None:
         class NoCounterexampleClient:

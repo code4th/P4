@@ -298,6 +298,8 @@ python3 -m keeper_adapter.cli report --kind daily
 - cloud review `approve` / `reject` が state transition に反映されることを確認
 - approval 済み proposal が `state/policies/latest-policy.json` と `state/policies/snapshots/` を更新することを確認
 - policy rollback 後に `latest-policy.json` が復元 snapshot を指すことを確認
+- governance profile によって low-risk autonomy を停止できることを確認
+- daily report に `Short-Horizon Governance` と `Long-Horizon Governance` が出力されることを確認
 - rollback 実行後に `status` が `rollback_applied` を返すことを確認
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-smoke` を使った `keeper_adapter` 読み取り成功
 - `OPENCLAW_P1_ROOT=/tmp/p1-core-loop-smoke` を使った growth loop 出力の `keeper_adapter` 読み取り成功
@@ -333,11 +335,9 @@ python3 -m keeper_adapter.cli report --kind daily
 
 次にやるべきことは以下の順。
 
-1. evaluator / governor の判断材料を長期統治ルールへ接続する
-2. report を短期 / 長期統治レイヤで分ける
-3. 実 Ollama を使った end-to-end 検証を追加する
-4. 低リスクな外界アクションを扱う experiment layer を dry-run beyond から進める
-5. experiment feedback を長期統治ルール側へ接続する
+1. 実 Ollama を使った end-to-end 検証を追加する
+2. 低リスクな外界アクションを扱う experiment layer を dry-run beyond から進める
+3. experiment feedback を長期統治ルール側へ接続する
 
 ## 11. コア完成条件
 

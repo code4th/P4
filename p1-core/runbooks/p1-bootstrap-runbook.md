@@ -43,6 +43,8 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 - cloud review responses in `state/cloud_evaluation/responses/` are applied during ingest
 - policy snapshots are written under `state/policies/snapshots/` when proposals are approved
 - policy state can be restored with `--rollback-policy-snapshot-id`
+- governance profile is read from `state/governance/latest-governance.json`
+- daily reports include short-horizon and long-horizon governance sections
 
 ## Rollback
 

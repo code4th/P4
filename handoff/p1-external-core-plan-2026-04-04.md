@@ -26,6 +26,7 @@ Completion target for this core:
 10. minimal external core module layout
 11. repeatable runbooks and rollback notes
 12. policy-state snapshot application and rollback support
+13. governance-profile connection for evaluator / governor and layered reporting
 
 ## Adapter strategy
 
@@ -45,7 +46,6 @@ Completion target for this core:
 
 ## Suggested next increment
 
-1. connect evaluator / governor decisions to longer-horizon governance rules
-2. run end-to-end verification against a real Ollama worker
-3. add an experiment layer for low-risk external actions beyond dry-run recording
-4. connect experiment feedback into longer-horizon governance rules
+1. run end-to-end verification against a real Ollama worker
+2. add an experiment layer for low-risk external actions beyond dry-run recording
+3. connect experiment feedback into longer-horizon governance rules

@@ -277,17 +277,17 @@ Verified in implementation:
 - knowledge state snapshots can be restored without deleting append-only history
 - approved proposals can mutate versioned policy state under `state/policies/`
 - policy snapshots can be rolled back through a current-pointer restore path
+- evaluator / governor now read a long-horizon governance profile from `state/governance/`
+- short-horizon and long-horizon governance layers are written into daily reports
 - `keeper_adapter` reads `glance / daily / approvals` from generated outputs
 
 ## 11. Remaining Work
 
 The next meaningful work is no longer basic skeleton building. It is quality and autonomy work:
 
-1. connect evaluator / governor decisions to longer-horizon governance rules
-2. split reporting into short-term and long-term governance layers
-3. run end-to-end verification against a real Ollama worker
-4. add an experiment layer for low-risk external actions beyond dry-run recording
-5. let experiment outcomes influence later proposal quality and promotion logic more deeply
+1. run end-to-end verification against a real Ollama worker
+2. add an experiment layer for low-risk external actions beyond dry-run recording
+3. let experiment outcomes influence later proposal quality and promotion logic more deeply
 
 ## 12. Supporting Documents
 
