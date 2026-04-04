@@ -431,20 +431,24 @@ Current operational entrypoints:
    - `python3 -m p1_core.cli state`
 
 8. Talk with P1
-   - `python3 -m p1_core.cli chat --model qwen3:4b-instruct --message "What do you think about the latest state?"`
-   - or `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 chat --model qwen3:4b-instruct --message "What do you think about the latest state?"`
+   - `python3 -m p1_core.cli chat --new-session --model qwen3:4b-instruct --message "What do you think about the latest state?"`
+   - or `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent chat --new-session --message "What do you think about the latest state?"`
 
 9. Record a world observation
    - `python3 -m p1_core.cli observe --text "A tool run failed during retrieval."`
-   - or `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 observe --text "A tool run failed during retrieval."`
+   - or `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent observe --text "A tool run failed during retrieval."`
 
 10. Queue a bounded world action request
    - `python3 -m p1_core.cli action --kind note --payload "prepare a bounded follow-up action"`
-   - or `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 action --kind note --payload "prepare a bounded follow-up action"`
+   - or `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent action --kind note --payload "prepare a bounded follow-up action"`
+11. Scaffold OpenClaw-facing registration without mutating global config automatically
+   - `python3 -m p1_core.bootstrap.install_openclaw_agent --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1 --source-agent main`
+   - `python3 -m p1_core.bootstrap.generate_openclaw_config_patch --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1`
 
 Current limitation:
 
-- P1 now has a direct CLI chat/operator surface through `bin/p1`
+- P1 now has a direct temporary front door through `bin/p1` and a dedicated OpenClaw-facing wrapper through `bin/p1-agent`
+- P1 can scaffold `~/.openclaw/agents/p1/` and a safe `openclaw.json` patch, but does not auto-edit global config
 - OpenClaw still remains a thin control plane and should not absorb P1 judgment logic
 
 ## 9. Rollback Principles

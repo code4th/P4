@@ -20,6 +20,15 @@ Included in this first skeleton:
 - minimal external core package layout
 - OpenClaw adapter boundary note
 
+Front-door intent:
+
+- `bin/p1 chat` is the temporary front door for talking to P1 as a distinct individual
+- `bin/p1-agent` is the OpenClaw-facing wrapper for treating P1 as a dedicated agent surface
+- `install_openclaw_agent.py` scaffolds `~/.openclaw/agents/p1` without moving P1 judgment into OpenClaw
+- `generate_openclaw_config_patch.py` writes a safe agent registration patch instead of editing `openclaw.json` directly
+- OpenClaw remains a runtime/control plane, not P1's identity
+- governance, audit, and rollback stay in the external core behind that interface
+
 Quick start:
 
 ```bash
@@ -35,6 +44,8 @@ OpenClaw-side P1 individual:
 ```bash
 cd /Users/satojunichi/Documents/openclaw/p1-core
 python3 -m p1_core.bootstrap.bootstrap_p1 --root /Users/satojunichi/.openclaw/workspace/systems/p1 --force
-/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 status
-/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 chat --model qwen3:4b-instruct --message "hello P1"
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent status
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent chat --new-session --message "hello P1"
+python3 -m p1_core.bootstrap.install_openclaw_agent --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1 --source-agent main
+python3 -m p1_core.bootstrap.generate_openclaw_config_patch --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1
 ```

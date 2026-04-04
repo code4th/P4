@@ -377,10 +377,12 @@ python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 ### 7.9 OpenClaw 上の別個体として P1 を扱う
 
 ```bash
-/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 status
-/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 chat --model qwen3:4b-instruct --message "hello P1"
-/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 observe --text "operator noticed a new pattern"
-/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 action --kind note --payload "review this anomaly"
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent status
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent chat --new-session --message "hello P1"
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent observe --text "operator noticed a new pattern"
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent action --kind note --payload "review this anomaly"
+python3 -m p1_core.bootstrap.install_openclaw_agent --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1 --source-agent main
+python3 -m p1_core.bootstrap.generate_openclaw_config_patch --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1
 ```
 
 ## 8. 検証済み事項
@@ -390,10 +392,12 @@ python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 - `p1-core` 単体テスト成功
 - bootstrap scaffolder による workspace 生成成功
 - example report 生成成功
-- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 status` 成功
-- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 observe` 成功
-- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 action` 成功
-- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 chat --model qwen3:4b-instruct` 成功
+- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent status` 成功
+- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent observe` 成功
+- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent action` 成功
+- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent chat --new-session` 成功
+- `install_openclaw_agent.py` で `~/.openclaw/agents/p1/` 相当の slot scaffold を外部生成できることを確認
+- `generate_openclaw_config_patch.py` で `agent/openclaw-config-agent-entry.json` を生成できることを確認
 - growth loop による knowledge / proposal / report / event 生成成功
 - knowledge state の `deferred` 遷移成功
 - proposal snapshot の履歴化と比較差分生成成功

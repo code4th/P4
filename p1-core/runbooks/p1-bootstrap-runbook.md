@@ -53,6 +53,15 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
    - inspect `state/experiments/latest-experiment.json`
 14. Inspect long-horizon governance feedback when rerun deferrals accumulate.
    - inspect `state/governance/latest-governance.json`
+15. Scaffold a dedicated OpenClaw agent slot when you are ready to expose P1 as its own agent.
+   - `python3 -m p1_core.bootstrap.install_openclaw_agent --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1 --source-agent main`
+   - this creates `~/.openclaw/agents/p1/agent/p1-openclaw-entry.json`
+   - provider/auth settings are copied from the chosen source agent, while P1 identity and transport stay in the workspace
+16. Generate a safe config patch before registering P1 in `openclaw.json`.
+   - `python3 -m p1_core.bootstrap.generate_openclaw_config_patch --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1`
+   - this writes `agent/openclaw-config-agent-entry.json`
+   - and `agent/openclaw-config-apply.md`
+   - apply the patch manually so agent registration remains auditable and reversible
 
 ## Verified outputs after growth loop
 
@@ -79,7 +88,12 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 - governance profile is read from `state/governance/latest-governance.json`
 - daily reports include short-horizon and long-horizon governance sections
 - conversation transcript is written under `state/conversation/transcript.jsonl`
+- conversation sessions are written under `state/conversation/sessions.jsonl`
+- chat input is mirrored into `state/world/observations.jsonl`
 - world observations and action requests are written under `state/world/`
+- OpenClaw-facing agent metadata is written under `agent/manifest.json`
+- OpenClaw-facing surface guidance is written under `agent/openclaw-agent.md`
+- OpenClaw config patch guidance is written under `agent/openclaw-config-apply.md`
 
 ## Rollback
 

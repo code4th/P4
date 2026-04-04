@@ -22,6 +22,24 @@ TEMPLATES = {
         "knowledge_states": ["raw", "candidate", "deferred", "active", "retired"],
         "promotion_mode": "proposal_only",
     },
+    "agent/manifest.json": {
+        "agent_id": "p1",
+        "display_name": "P1",
+        "interface_kind": "openclaw-facing-thin-transport",
+        "identity_source": "external-core-workspace",
+        "entrypoint": {
+            "wrapper": "bin/p1-agent",
+            "chat": "bin/p1-agent chat --new-session --message \"hello P1\"",
+            "status": "bin/p1-agent status",
+            "observe": "bin/p1-agent observe --text \"operator noticed a new pattern\"",
+            "action": "bin/p1-agent action --kind note --payload \"review this anomaly\"",
+        },
+        "capabilities": ["chat", "observe", "action", "status", "report", "approvals"],
+        "boundary": {
+            "openclaw_role": "transport_and_presentation",
+            "external_core_role": "memory_governance_audit_rollback",
+        },
+    },
 }
 
 PROMPT_TEMPLATE = """# P1 System Prompt
@@ -35,6 +53,8 @@ Rules:
 - do not self-promote lessons directly into truth
 - preserve logs, counterexamples, and rollback paths
 - route high-risk mutation proposals for approval
+- speak as a distinct individual, not as maintenance tooling
+- keep conversation identity at the front and governance substrate behind it
 """
 
 RUNBOOK_TEMPLATE = """# P1 Runbook
@@ -42,8 +62,11 @@ RUNBOOK_TEMPLATE = """# P1 Runbook
 1. Start the local worker.
 2. Verify `/health`.
 3. Read workspace `config.json`.
-4. Write all reports under `state/reports/`.
-5. Treat `state/proposals/` as approval-gated output.
+4. Use `bin/p1 chat` as the primary front door for day-to-day interaction.
+5. Use `observe`, `action`, `status`, and `report` as support commands behind that front door.
+6. Write all reports under `state/reports/`.
+7. Treat `state/proposals/` as approval-gated output.
+8. Use `agent/manifest.json` and `bin/p1-agent` when wiring P1 into an OpenClaw-visible agent slot.
 
 Rollback:
 
@@ -62,6 +85,17 @@ export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 exec python3 -m p1_core.cli --root "$ROOT_DIR" "$@"
 """
 
+BIN_P1_AGENT_TEMPLATE = """#!/bin/sh
+set -eu
+
+ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="/Users/satojunichi/Documents/openclaw"
+
+export OPENCLAW_P1_ROOT="$ROOT_DIR"
+export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m keeper_adapter.cli "$@"
+"""
+
 BIN_P1_WORKER_TEMPLATE = """#!/bin/sh
 set -eu
 
@@ -71,10 +105,30 @@ export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 exec python3 -m p1_core.worker.ollama_worker "$@"
 """
 
+OPENCLAW_AGENT_PROMPT_TEMPLATE = """# P1 OpenClaw Agent Surface
+
+This file describes how OpenClaw should expose P1.
+
+Principles:
+
+- present P1 as a distinct agent alongside the main agent
+- use OpenClaw only as transport, tool runtime, and presentation
+- do not absorb P1 identity, memory, or governance into OpenClaw
+- route chat, observe, and bounded action requests through `bin/p1-agent`
+
+Recommended entry commands:
+
+- `bin/p1-agent status`
+- `bin/p1-agent chat --new-session --message "hello P1"`
+- `bin/p1-agent observe --text "operator noticed a new pattern"`
+- `bin/p1-agent action --kind note --payload "review this anomaly"`
+"""
+
 
 def scaffold_workspace(root: Path, force: bool = False) -> list[Path]:
     created: list[Path] = []
     directories = [
+        root / "agent",
         root / "bin",
         root / "state" / "reports",
         root / "state" / "reports" / "daily",
@@ -116,11 +170,22 @@ def scaffold_workspace(root: Path, force: bool = False) -> list[Path]:
         bin_p1_path.chmod(0o755)
         created.append(bin_p1_path)
 
+    bin_p1_agent_path = root / "bin" / "p1-agent"
+    if not bin_p1_agent_path.exists() or force:
+        bin_p1_agent_path.write_text(BIN_P1_AGENT_TEMPLATE, encoding="utf-8")
+        bin_p1_agent_path.chmod(0o755)
+        created.append(bin_p1_agent_path)
+
     bin_worker_path = root / "bin" / "p1-worker"
     if not bin_worker_path.exists() or force:
         bin_worker_path.write_text(BIN_P1_WORKER_TEMPLATE, encoding="utf-8")
         bin_worker_path.chmod(0o755)
         created.append(bin_worker_path)
+
+    openclaw_agent_prompt_path = root / "agent" / "openclaw-agent.md"
+    if not openclaw_agent_prompt_path.exists() or force:
+        openclaw_agent_prompt_path.write_text(OPENCLAW_AGENT_PROMPT_TEMPLATE, encoding="utf-8")
+        created.append(openclaw_agent_prompt_path)
 
     return created
 
