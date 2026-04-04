@@ -403,6 +403,9 @@ python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/sa
 - `install_openclaw_agent.py` で `~/.openclaw/agents/p1/` 相当の slot scaffold を外部生成できることを確認
 - `generate_openclaw_config_patch.py` で `agent/openclaw-config-agent-entry.json` を生成できることを確認
 - `apply_openclaw_config_patch.py` で `openclaw.json` に `p1` を登録し、backup を残せることを確認
+- `openclaw agents list` で `p1` が configured agent として見えることを確認
+- `openclaw agent --agent p1 --local --message ... --json` は通るが、現状は OpenClaw embedded agent 実行であり `bin/p1-agent` 経由ではないことを確認
+- そのため direct OpenClaw turn 後も `state/conversation/transcript.jsonl` と `state/world/observations.jsonl` は更新されず、external-core front door への接続は残課題であることを確認
 - growth loop による knowledge / proposal / report / event 生成成功
 - knowledge state の `deferred` 遷移成功
 - proposal snapshot の履歴化と比較差分生成成功
