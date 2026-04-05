@@ -192,6 +192,33 @@ class AutonomyRuntimeTests(unittest.TestCase):
             proposal = runtime.capability_store.list_proposals(limit=1)[0]
             self.assertEqual(proposal["proposal_type"], "capability_extension")
 
+    def test_repeated_same_gap_does_not_create_duplicate_proposals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+            first = runtime.capability_store.record_gap(
+                title="missing read backend",
+                detail="openclaw action backend is not configured",
+                source="autonomy.action",
+                severity="high",
+                metadata={"kind": "read_file", "backend": "openclaw"},
+            )
+            second = runtime.capability_store.record_gap(
+                title="missing read backend",
+                detail="openclaw action backend is not configured",
+                source="autonomy.action",
+                severity="high",
+                metadata={"kind": "read_file", "backend": "openclaw"},
+            )
+
+            runtime.tick_once()
+            runtime.save_state({**runtime.load_state(), "next_wake_at": None})
+            second_tick = runtime.tick_once()
+
+            self.assertEqual(first["gap_id"], second["gap_id"])
+            self.assertEqual(second_tick["status"], "capability_review_recorded")
+            self.assertEqual(runtime.capability_store.proposal_counts()["total"], 1)
+
     def test_capability_proposal_is_reviewed_and_queues_cloud_request(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -236,6 +263,35 @@ class AutonomyRuntimeTests(unittest.TestCase):
             self.assertEqual(result["status"], "capability_execution_queued")
             self.assertEqual(runtime.capability_store.execution_counts()["queued_action"], 1)
             self.assertEqual(runtime.action_store.counts()["queued"], 1)
+
+    def test_capability_execution_is_reconciled_after_action_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+            proposal = runtime.capability_store.record_proposal(
+                gap_id="capgap:test",
+                summary="Implement missing capability: low severity task",
+                proposal_type="capability_extension",
+                risk_level="low",
+                requires_approval=False,
+                detail="safe low-risk task",
+            )
+            runtime.capability_store.record_review(
+                proposal_id=proposal["proposal_id"],
+                gap_id=proposal["gap_id"],
+                evaluation={"decision": "candidate"},
+                governance={"proposal": proposal, "next_step": "autonomous_apply"},
+            )
+
+            first = runtime.tick_once()
+            runtime.save_state({**runtime.load_state(), "next_wake_at": None})
+            second = runtime.tick_once()
+            execution = runtime.capability_store.list_executions(limit=1)[0]
+
+            self.assertEqual(first["status"], "capability_execution_queued")
+            self.assertEqual(second["status"], "action_executed")
+            self.assertEqual(execution["status"], "completed")
+            self.assertIn("rollback_hint", execution["metadata"])
 
 
 if __name__ == "__main__":

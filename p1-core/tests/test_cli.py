@@ -251,6 +251,47 @@ class OperatorCliTests(unittest.TestCase):
             self.assertEqual(payload["status"], "capability_execution_queued")
             self.assertEqual(view["executionCounts"]["queued_action"], 1)
 
+    def test_capability_execution_completes_and_is_auditable(self) -> None:
+        class FakeClient:
+            def __init__(self, model: str, base_url: str = "http://127.0.0.1:11434", timeout_seconds: float = 60.0) -> None:
+                self.model = model
+
+            def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+                return "local autonomy reply"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("p1_core.cli.OllamaClient", FakeClient):
+                operator_tick(root)
+                runtime_state_path = root / "state" / "autonomy" / "runtime-state.json"
+                runtime_state = json.loads(runtime_state_path.read_text(encoding="utf-8"))
+                runtime_state["next_wake_at"] = None
+                runtime_state_path.write_text(json.dumps(runtime_state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                from p1_core.autonomy import AutonomyRuntime
+                runtime = AutonomyRuntime(root=root, local_llm_backend=FakeClient("qwen3:4b-instruct"))
+                proposal = runtime.capability_store.record_proposal(
+                    gap_id="capgap:test",
+                    summary="Implement missing capability: low severity task",
+                    proposal_type="capability_extension",
+                    risk_level="low",
+                    requires_approval=False,
+                    detail="safe low-risk task",
+                )
+                runtime.capability_store.record_review(
+                    proposal_id=proposal["proposal_id"],
+                    gap_id=proposal["gap_id"],
+                    evaluation={"decision": "candidate"},
+                    governance={"proposal": proposal, "next_step": "autonomous_apply"},
+                )
+                operator_tick(root)
+                runtime_state = json.loads(runtime_state_path.read_text(encoding="utf-8"))
+                runtime_state["next_wake_at"] = None
+                runtime_state_path.write_text(json.dumps(runtime_state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                operator_tick(root)
+                view = operator_show_capability_gaps(root)
+            self.assertEqual(view["executionCounts"]["completed"], 1)
+            self.assertEqual(view["executions"][0]["status"], "completed")
+
     def test_operator_ingest_can_queue_background_analysis(self) -> None:
         class FakeClient:
             def __init__(self, model: str, base_url: str = "http://127.0.0.1:11434", timeout_seconds: float = 60.0) -> None:

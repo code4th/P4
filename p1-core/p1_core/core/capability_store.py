@@ -4,12 +4,24 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _gap_key(*, title: str, detail: str, source: str, metadata: dict[str, Any] | None = None) -> str:
+    payload = {
+        "title": title.strip(),
+        "detail": detail.strip(),
+        "source": source.strip(),
+        "metadata": metadata or {},
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return f"capgapkey:{sha256(encoded.encode('utf-8')).hexdigest()[:16]}"
 
 
 @dataclass(slots=True)
@@ -32,8 +44,13 @@ class CapabilityStore:
         severity: str = "medium",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        gap_key = _gap_key(title=title, detail=detail, source=source, metadata=metadata)
+        existing = self.find_gap_by_key(gap_key)
+        if existing is not None:
+            return existing
         payload = {
             "gap_id": f"capgap:{uuid.uuid4()}",
+            "gap_key": gap_key,
             "title": title,
             "detail": detail,
             "source": source,
@@ -68,6 +85,12 @@ class CapabilityStore:
             "high": by_severity.get("high", 0),
         }
 
+    def find_gap_by_key(self, gap_key: str) -> dict[str, Any] | None:
+        for row in reversed(self.list_gaps(limit=100000)):
+            if row.get("gap_key") == gap_key:
+                return row
+        return None
+
     def record_proposal(
         self,
         *,
@@ -82,6 +105,7 @@ class CapabilityStore:
         payload = {
             "proposal_id": f"capprop:{uuid.uuid4()}",
             "gap_id": gap_id,
+            "gap_key": metadata.get("gap_key") if metadata else None,
             "proposal_type": proposal_type,
             "summary": summary,
             "risk_level": risk_level,
@@ -127,6 +151,9 @@ class CapabilityStore:
     def has_proposal_for_gap(self, gap_id: str) -> bool:
         return any(row.get("gap_id") == gap_id for row in self.list_proposals(limit=100000))
 
+    def has_proposal_for_gap_key(self, gap_key: str) -> bool:
+        return any(row.get("gap_key") == gap_key for row in self.list_proposals(limit=100000))
+
     def record_review(
         self,
         *,
@@ -136,6 +163,9 @@ class CapabilityStore:
         governance: dict[str, Any],
         cloud_request_path: str | None = None,
     ) -> dict[str, Any]:
+        existing = self.find_review_for_proposal(proposal_id)
+        if existing is not None:
+            return existing
         payload = {
             "review_id": f"capreview:{uuid.uuid4()}",
             "proposal_id": proposal_id,
@@ -171,6 +201,12 @@ class CapabilityStore:
     def has_review_for_proposal(self, proposal_id: str) -> bool:
         return any(row.get("proposal_id") == proposal_id for row in self.list_reviews(limit=100000))
 
+    def find_review_for_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        for row in reversed(self.list_reviews(limit=100000)):
+            if row.get("proposal_id") == proposal_id:
+                return row
+        return None
+
     def record_execution(
         self,
         *,
@@ -180,9 +216,16 @@ class CapabilityStore:
         status: str,
         detail: str,
         metadata: dict[str, Any] | None = None,
+        execution_id: str | None = None,
     ) -> dict[str, Any]:
+        current_execution_id = execution_id
+        if current_execution_id is None:
+            existing = self.find_execution_for_proposal(proposal_id)
+            if existing is not None:
+                return existing
+            current_execution_id = f"capexec:{uuid.uuid4()}"
         payload = {
-            "execution_id": f"capexec:{uuid.uuid4()}",
+            "execution_id": current_execution_id,
             "review_id": review_id,
             "proposal_id": proposal_id,
             "action_id": action_id,
@@ -210,8 +253,55 @@ class CapabilityStore:
         return {
             "total": len(rows),
             "queued_action": sum(1 for row in rows if row.get("status") == "queued_action"),
+            "completed": sum(1 for row in rows if row.get("status") == "completed"),
+            "failed": sum(1 for row in rows if row.get("status") == "failed"),
             "rejected": sum(1 for row in rows if row.get("status") == "rejected"),
         }
 
     def has_execution_for_review(self, review_id: str) -> bool:
         return any(row.get("review_id") == review_id for row in self.list_executions(limit=100000))
+
+    def has_execution_for_proposal(self, proposal_id: str) -> bool:
+        return any(row.get("proposal_id") == proposal_id for row in self.list_executions(limit=100000))
+
+    def find_execution_for_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        for row in reversed(self.list_executions(limit=100000)):
+            if row.get("proposal_id") == proposal_id:
+                return row
+        return None
+
+    def find_execution_for_action(self, action_id: str) -> dict[str, Any] | None:
+        for row in reversed(self.list_executions(limit=100000)):
+            if row.get("action_id") == action_id:
+                return row
+        return None
+
+    def update_execution(
+        self,
+        execution_id: str,
+        *,
+        status: str,
+        detail: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        rows = self.list_executions(limit=100000)
+        updated: dict[str, Any] | None = None
+        rewritten: list[dict[str, Any]] = []
+        for row in rows:
+            if row.get("execution_id") == execution_id:
+                row = {
+                    **row,
+                    "status": status,
+                    "detail": detail,
+                    "metadata": {**row.get("metadata", {}), **(metadata or {})},
+                    "updated_at": _now(),
+                }
+                updated = row
+            rewritten.append(row)
+        if updated is None:
+            raise KeyError(f"unknown execution_id: {execution_id}")
+        self.executions_path.write_text(
+            "\n".join(json.dumps(row, ensure_ascii=False) for row in rewritten) + "\n",
+            encoding="utf-8",
+        )
+        return updated

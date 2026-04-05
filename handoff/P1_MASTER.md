@@ -506,10 +506,11 @@ Current limitation:
 - until a deeper adapter exists, the verified external-core-backed entrypoint is `bin/p1` for autonomy and `bin/p1-agent` for status/report/approval transport
 - OpenClaw still remains a thin control plane and should not absorb P1 judgment logic
 - the new autonomy runtime is still cooperative rather than always-on, and OpenClaw-backed Plus use is intentionally conservative and not yet wired as the default deliberation lane
-- capability gaps are now recorded under `state/capabilities/gaps.jsonl`, but automatic self-extension from those gaps is not complete yet
+- capability gaps are now deduplicated semantically and recorded under `state/capabilities/gaps.jsonl`
 - capability gaps now also yield first-pass self-extension proposals under `state/capabilities/proposals.jsonl`
 - capability proposals now receive first-pass evaluation/governance reviews and can queue cloud approval requests under `state/capabilities/cloud_evaluation/requests/`
 - approved capability proposals are first turned into bounded self-extension tasks, not direct unrestricted self-rewrites
+- capability execution is deduplicated per proposal and reconciled after the queued task completes or fails, with rollback hints retained in `state/capabilities/executions.jsonl`
 - the new `openclaw_backend` config block is an explicit opt-in adapter contract, not a signal to move default cognition away from local-first routing
 
 ## 9. Rollback Principles

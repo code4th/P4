@@ -412,9 +412,10 @@ python3 -m p1_core.cli queue-action --kind append_note --inputs '{"content":"aut
 - low-risk queued action を自分で実行できる
 - missing backend / unsupported action を `state/capabilities/gaps.jsonl` に記録できる
 - `config.json` の `openclaw_backend` を有効化したときだけ OpenClaw CLI adapter を backend として使う
-- 未提案の capability gap は `state/capabilities/proposals.jsonl` に first-pass self-extension proposal を起こせる
+- 未提案の capability gap は semantic key で重複排除したうえで `state/capabilities/proposals.jsonl` に first-pass self-extension proposal を起こせる
 - capability proposal は `state/capabilities/reviews.jsonl` に first-pass governance review を持ち、approval-required なものは `state/capabilities/cloud_evaluation/requests/` に回る
-- approved capability proposal はまず `state/capabilities/executions.jsonl` と action queue を通じた bounded task 化に留める
+- approved capability proposal は proposal 単位で重複実行を避けつつ `state/capabilities/executions.jsonl` と action queue を通じた bounded task 化に留める
+- bounded task の完了/失敗と rollback hint は `state/capabilities/executions.jsonl` に還流する
 
 ## 8. 検証済み事項
 

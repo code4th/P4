@@ -391,6 +391,7 @@ class AutonomyRuntime:
                         severity="high" if spec.backend == "openclaw" else "medium",
                         metadata={"action_id": spec.action_id, "kind": spec.kind, "backend": spec.backend},
                     )
+            self._sync_capability_execution(spec.action_id, stored)
             next_wake = moment + timedelta(seconds=300)
             self.save_state(
                 {
@@ -492,6 +493,9 @@ class AutonomyRuntime:
 
     def _next_unproposed_gap(self) -> dict[str, Any] | None:
         for gap in reversed(self.capability_store.list_gaps(limit=100)):
+            gap_key = str(gap.get("gap_key", ""))
+            if gap_key and self.capability_store.has_proposal_for_gap_key(gap_key):
+                continue
             if not self.capability_store.has_proposal_for_gap(str(gap.get("gap_id"))):
                 return gap
         return None
@@ -524,6 +528,7 @@ class AutonomyRuntime:
             metadata={
                 "source": gap.get("source"),
                 "severity": gap.get("severity"),
+                "gap_key": gap.get("gap_key"),
                 "gap_metadata": gap.get("metadata", {}),
             },
         )
@@ -580,6 +585,8 @@ class AutonomyRuntime:
             next_step = str(review.get("governance", {}).get("next_step", ""))
             proposal = review.get("governance", {}).get("proposal", {})
             proposal_id = str(proposal.get("proposal_id", ""))
+            if proposal_id and self.capability_store.has_execution_for_proposal(proposal_id):
+                continue
             if next_step == "autonomous_apply":
                 return review
             if next_step == "await_cloud_approval":
@@ -626,6 +633,36 @@ class AutonomyRuntime:
             detail="queued bounded self-extension task",
             metadata={"action_kind": "append_note", "gap_id": gap_id},
         )
+
+    def _sync_capability_execution(self, action_id: str, action_record: dict[str, Any]) -> None:
+        execution = self.capability_store.find_execution_for_action(action_id)
+        if execution is None:
+            return
+        result = action_record.get("result", {})
+        if action_record.get("status") == "completed":
+            self.capability_store.update_execution(
+                str(execution["execution_id"]),
+                status="completed",
+                detail=f"self-extension task completed via {action_record.get('kind')}",
+                metadata={
+                    "action_status": action_record.get("status"),
+                    "artifacts": result.get("artifacts", []),
+                    "rollback_hint": result.get("rollback_hint"),
+                    "stdout": result.get("stdout"),
+                },
+            )
+        elif action_record.get("status") == "failed":
+            self.capability_store.update_execution(
+                str(execution["execution_id"]),
+                status="failed",
+                detail=f"self-extension task failed: {action_record.get('error') or result.get('stderr', 'unknown error')}",
+                metadata={
+                    "action_status": action_record.get("status"),
+                    "error": action_record.get("error") or result.get("stderr"),
+                    "artifacts": result.get("artifacts", []),
+                    "rollback_hint": result.get("rollback_hint"),
+                },
+            )
 
     def _should_sleep(self, state: dict[str, Any], moment: datetime, *, has_inbox: bool) -> bool:
         if has_inbox:
