@@ -251,7 +251,7 @@ class OperatorCliTests(unittest.TestCase):
             self.assertEqual(payload["status"], "capability_execution_queued")
             self.assertEqual(view["executionCounts"]["queued_action"], 1)
 
-    def test_show_capability_tasks_lists_planned_tasks(self) -> None:
+    def test_show_capability_tasks_tracks_task_lifecycle(self) -> None:
         class FakeClient:
             def __init__(self, model: str, base_url: str = "http://127.0.0.1:11434", timeout_seconds: float = 60.0) -> None:
                 self.model = model
@@ -281,9 +281,13 @@ class OperatorCliTests(unittest.TestCase):
                 )
                 operator_tick(root)
                 operator_tick(root)
+                operator_tick(root)
+                operator_tick(root)
                 tasks = operator_show_capability_tasks(root)
-            self.assertEqual(tasks["taskCounts"]["pending"], 1)
-            self.assertEqual(tasks["tasks"][0]["status"], "pending")
+            self.assertEqual(tasks["taskCounts"]["pending"], 0)
+            self.assertEqual(tasks["taskCounts"]["in_progress"], 0)
+            self.assertEqual(tasks["taskCounts"]["done"], 1)
+            self.assertEqual(tasks["tasks"], [])
 
     def test_capability_execution_completes_and_is_auditable(self) -> None:
         class FakeClient:

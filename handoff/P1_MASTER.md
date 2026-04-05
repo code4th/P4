@@ -515,6 +515,7 @@ Current limitation:
 - deferred retries now stop after a bounded retry limit instead of looping forever on the same failure
 - approved capability work is now materialized as a bounded implementation task artifact under `state/capabilities/tasks/`, not only as a free-form note
 - the autonomy surface can inspect `state/capabilities/tasks/` and pick up pending bounded implementation tasks as first-class state
+- bounded implementation tasks now move through `pending -> in_progress -> done/failed` instead of lingering as a single static note
 - the new `openclaw_backend` config block is an explicit opt-in adapter contract, not a signal to move default cognition away from local-first routing
 
 ## 9. Rollback Principles

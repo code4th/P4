@@ -36,6 +36,7 @@ def _resolve_within_root(root: Path, relative_path: str) -> Path:
 
 INTRINSIC_ACTION_RISK = {
     "append_note": "low",
+    "write_note_file": "low",
     "write_capability_task": "low",
     "plan_capability_task": "low",
     "read_file": "low",
@@ -260,6 +261,13 @@ class ActionExecutor:
                 stdout = f"wrote note to {note_path}"
                 artifacts.append(str(note_path))
                 rollback_hint = f"delete {note_path}"
+            elif spec.kind == "write_note_file":
+                path = _resolve_within_root(self.root, str(spec.inputs["path"]))
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(str(spec.inputs.get("content", "")) + "\n", encoding="utf-8")
+                stdout = f"wrote note file {path}"
+                artifacts.append(str(path))
+                rollback_hint = f"delete {path}"
             elif spec.kind == "write_capability_task":
                 task_dir = self.root / "state" / "capabilities" / "tasks"
                 task_dir.mkdir(parents=True, exist_ok=True)

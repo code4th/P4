@@ -420,6 +420,7 @@ python3 -m p1_core.cli queue-action --kind append_note --inputs '{"content":"aut
 - deferred retry は上限回数で打ち切る
 - approved capability proposal は `state/capabilities/tasks/*.json` に bounded implementation task を生成する
 - bounded implementation task は autonomy surface から inspect 可能で、次の tick で処理候補になる
+- bounded implementation task は `pending -> in_progress -> done/failed` の状態遷移を持つ
 
 ## 8. 検証済み事項
 

@@ -337,6 +337,38 @@ class AutonomyRuntimeTests(unittest.TestCase):
             self.assertIn("rollback_hint", execution["metadata"])
             self.assertTrue(execution["metadata"]["artifacts"][0].endswith(".json"))
 
+    def test_capability_task_lifecycle_moves_to_done_after_task_artifact_write(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+            proposal = runtime.capability_store.record_proposal(
+                gap_id="capgap:test",
+                summary="Implement missing capability: low severity task",
+                proposal_type="capability_extension",
+                risk_level="low",
+                requires_approval=False,
+                detail="safe low-risk task",
+            )
+            runtime.capability_store.record_review(
+                proposal_id=proposal["proposal_id"],
+                gap_id=proposal["gap_id"],
+                evaluation={"decision": "candidate"},
+                governance={"proposal": proposal, "next_step": "autonomous_apply"},
+            )
+
+            first = runtime.tick_once()
+            second = runtime.tick_once()
+            third = runtime.tick_once()
+            fourth = runtime.tick_once()
+
+            self.assertEqual(first["status"], "capability_execution_queued")
+            self.assertEqual(second["status"], "action_executed")
+            self.assertEqual(third["status"], "capability_task_planned")
+            self.assertEqual(fourth["status"], "action_executed")
+            self.assertEqual(runtime.capability_task_store.counts()["pending"], 0)
+            self.assertEqual(runtime.capability_task_store.counts()["in_progress"], 0)
+            self.assertEqual(runtime.capability_task_store.counts()["done"], 1)
+
     def test_deferred_action_is_requeued_after_retry_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

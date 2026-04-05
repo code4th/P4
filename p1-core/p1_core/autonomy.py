@@ -264,7 +264,14 @@ class AutonomyRuntime:
             self.action_store.requeue_due_deferred(now_iso=_iso(moment))
             queued_message = self.inbox.next_message()
             has_actions = self.action_store.counts().get("queued", 0) > 0
-            if self._should_sleep(state, moment, has_inbox=queued_message is not None, has_actions=has_actions):
+            has_task_work = self.capability_task_store.counts().get("pending", 0) > 0 or self.capability_task_store.counts().get("in_progress", 0) > 0
+            if self._should_sleep(
+                state,
+                moment,
+                has_inbox=queued_message is not None,
+                has_actions=has_actions,
+                has_task_work=has_task_work,
+            ):
                 result = {
                     "status": "sleeping",
                     "summary": "no pending work and next wake has not arrived",
@@ -709,20 +716,44 @@ class AutonomyRuntime:
 
     def _materialize_task_execution(self, task: dict[str, Any]) -> dict[str, Any]:
         task_id = str(task.get("task_id"))
+        self.capability_task_store.mark_started(task_id)
         target_files = task.get("target_files", [])
         if not target_files:
+            plan_path = self.root / "state" / "capabilities" / "tasks" / f"{task_id.replace(':', '-')}.md"
+            action = self.action_store.enqueue(
+                ActionSpec(
+                    kind="write_note_file",
+                    inputs={
+                        "task_id": task_id,
+                        "path": str(plan_path.relative_to(self.root)),
+                        "content": (
+                            f"# Bounded Implementation Task\n\n"
+                            f"- task_id: {task_id}\n"
+                            f"- proposal_id: {task.get('proposal_id')}\n"
+                            f"- gap_id: {task.get('gap_id')}\n"
+                            f"- summary: {task.get('summary')}\n\n"
+                            f"## Acceptance Checks\n"
+                            + "\n".join(f"- {item}" for item in task.get("acceptance_checks", []))
+                            + "\n"
+                        ),
+                    },
+                    risk_level="low",
+                    backend="local",
+                    goal="write a bounded implementation task draft",
+                )
+            )
             return self.capability_store.record_execution(
                 review_id=f"taskreview:{task_id}",
                 proposal_id=str(task.get("proposal_id", task_id)),
-                action_id=None,
-                status="planned",
-                detail="task has no target files yet; awaiting concrete implementation scope",
-                metadata={"task_id": task_id, "acceptance_checks": task.get("acceptance_checks", [])},
+                action_id=str(action["action_id"]),
+                status="queued_action",
+                detail="queued bounded task draft write",
+                metadata={"task_id": task_id, "action_kind": "write_note_file", "task_path": str(plan_path), "phase": "implementation"},
             )
         action = self.action_store.enqueue(
             ActionSpec(
                 kind="read_file",
-                inputs={"path": str(target_files[0])},
+                inputs={"task_id": task_id, "path": str(target_files[0])},
                 risk_level="low",
                 backend="local",
                 goal="inspect first target file for bounded implementation task",
@@ -742,6 +773,7 @@ class AutonomyRuntime:
         if execution is None:
             return
         result = action_record.get("result", {})
+        task_id = str(action_record.get("inputs", {}).get("task_id", execution.get("metadata", {}).get("task_id", "")))
         if action_record.get("status") == "completed":
             self.capability_store.update_execution(
                 str(execution["execution_id"]),
@@ -754,6 +786,16 @@ class AutonomyRuntime:
                     "stdout": result.get("stdout"),
                 },
             )
+            if task_id:
+                self.capability_task_store.mark_done(
+                    task_id,
+                    {
+                        "action_id": action_id,
+                        "action_kind": action_record.get("kind"),
+                        "stdout": result.get("stdout"),
+                        "artifacts": result.get("artifacts", []),
+                    },
+                )
         elif action_record.get("status") == "failed":
             self.capability_store.update_execution(
                 str(execution["execution_id"]),
@@ -766,6 +808,11 @@ class AutonomyRuntime:
                     "rollback_hint": result.get("rollback_hint"),
                 },
             )
+            if task_id:
+                self.capability_task_store.mark_failed(
+                    task_id,
+                    action_record.get("error") or result.get("stderr", "unknown error"),
+                )
         elif action_record.get("status") == "deferred":
             self.capability_store.update_execution(
                 str(execution["execution_id"]),
@@ -777,9 +824,22 @@ class AutonomyRuntime:
                     "defer_reason": action_record.get("defer_reason"),
                 },
             )
+            if task_id:
+                self.capability_task_store.mark_failed(
+                    task_id,
+                    action_record.get("defer_reason", "deferred by policy"),
+                )
 
-    def _should_sleep(self, state: dict[str, Any], moment: datetime, *, has_inbox: bool, has_actions: bool = False) -> bool:
-        if has_inbox or has_actions:
+    def _should_sleep(
+        self,
+        state: dict[str, Any],
+        moment: datetime,
+        *,
+        has_inbox: bool,
+        has_actions: bool = False,
+        has_task_work: bool = False,
+    ) -> bool:
+        if has_inbox or has_actions or has_task_work:
             return False
         next_wake_at = state.get("next_wake_at")
         if not next_wake_at:

@@ -244,8 +244,9 @@ class CapabilityStore:
         execution_id: str | None = None,
     ) -> dict[str, Any]:
         current_execution_id = execution_id
+        task_id = (metadata or {}).get("task_id")
         if current_execution_id is None:
-            existing = self.find_execution_for_proposal(proposal_id)
+            existing = self.find_execution_for_task_id(str(task_id)) if task_id else self.find_execution_for_proposal(proposal_id)
             if existing is not None:
                 return existing
             current_execution_id = f"capexec:{uuid.uuid4()}"
@@ -289,9 +290,18 @@ class CapabilityStore:
     def has_execution_for_proposal(self, proposal_id: str) -> bool:
         return any(row.get("proposal_id") == proposal_id for row in self.list_executions(limit=100000))
 
+    def has_execution_for_task_id(self, task_id: str) -> bool:
+        return any(row.get("metadata", {}).get("task_id") == task_id for row in self.list_executions(limit=100000))
+
     def find_execution_for_proposal(self, proposal_id: str) -> dict[str, Any] | None:
         for row in reversed(self.list_executions(limit=100000)):
             if row.get("proposal_id") == proposal_id:
+                return row
+        return None
+
+    def find_execution_for_task_id(self, task_id: str) -> dict[str, Any] | None:
+        for row in reversed(self.list_executions(limit=100000)):
+            if row.get("metadata", {}).get("task_id") == task_id:
                 return row
         return None
 
