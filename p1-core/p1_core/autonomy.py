@@ -825,9 +825,27 @@ class AutonomyRuntime:
                 },
             )
             if task_id:
-                self.capability_task_store.mark_failed(
+                self.capability_task_store.mark_deferred(
                     task_id,
                     action_record.get("defer_reason", "deferred by policy"),
+                    retry_after_at=str(action_record.get("retry_after_at", _iso(_now() + timedelta(seconds=300)))),
+                )
+        elif action_record.get("status") == "failed":
+            self.capability_store.update_execution(
+                str(execution["execution_id"]),
+                status="failed",
+                detail=f"self-extension task failed: {action_record.get('error') or result.get('stderr', 'unknown error')}",
+                metadata={
+                    "action_status": action_record.get("status"),
+                    "error": action_record.get("error") or result.get("stderr"),
+                    "artifacts": result.get("artifacts", []),
+                    "rollback_hint": result.get("rollback_hint"),
+                },
+            )
+            if task_id:
+                self.capability_task_store.mark_failed(
+                    task_id,
+                    action_record.get("error") or result.get("stderr", "unknown error"),
                 )
 
     def _should_sleep(

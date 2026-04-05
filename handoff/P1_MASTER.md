@@ -516,6 +516,8 @@ Current limitation:
 - approved capability work is now materialized as a bounded implementation task artifact under `state/capabilities/tasks/`, not only as a free-form note
 - the autonomy surface can inspect `state/capabilities/tasks/` and pick up pending bounded implementation tasks as first-class state
 - bounded implementation tasks now move through `pending -> in_progress -> done/failed` instead of lingering as a single static note
+- failed or deferred task attempts now preserve a reason and keep execution/task state aligned instead of treating every pause as a failure
+- file-writing actions preserve pre-image backups under `state/rollback/backups/` so rollback hints point to real recovery material
 - the new `openclaw_backend` config block is an explicit opt-in adapter contract, not a signal to move default cognition away from local-first routing
 
 ## 9. Rollback Principles

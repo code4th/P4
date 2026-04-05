@@ -19,6 +19,7 @@ class CapabilityTaskStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
         self.in_progress_dir.mkdir(parents=True, exist_ok=True)
+        self.deferred_dir.mkdir(parents=True, exist_ok=True)
         self.done_dir.mkdir(parents=True, exist_ok=True)
         self.failed_dir.mkdir(parents=True, exist_ok=True)
 
@@ -38,6 +39,10 @@ class CapabilityTaskStore:
     def in_progress_dir(self) -> Path:
         return self.root / "in-progress"
 
+    @property
+    def deferred_dir(self) -> Path:
+        return self.root / "deferred"
+
     def list_tasks(self, *, limit: int = 20) -> list[dict[str, Any]]:
         if not self.tasks_dir.exists():
             return []
@@ -50,6 +55,7 @@ class CapabilityTaskStore:
         return {
             "pending": len(list(self.tasks_dir.glob("*.json"))),
             "in_progress": len(list(self.in_progress_dir.glob("*.json"))),
+            "deferred": len(list(self.deferred_dir.glob("*.json"))),
             "done": len(list(self.done_dir.glob("*.json"))),
             "failed": len(list(self.failed_dir.glob("*.json"))),
         }
@@ -77,6 +83,14 @@ class CapabilityTaskStore:
         payload["failed_at"] = _now()
         payload["error"] = error
         return self._move_payload(self._source_dir(task_id), self.failed_dir, task_id, payload)
+
+    def mark_deferred(self, task_id: str, reason: str, *, retry_after_at: str) -> dict[str, Any]:
+        payload = self._read_any(task_id)
+        payload["status"] = "deferred"
+        payload["deferred_at"] = _now()
+        payload["defer_reason"] = reason
+        payload["retry_after_at"] = retry_after_at
+        return self._move_payload(self._source_dir(task_id), self.deferred_dir, task_id, payload)
 
     def _read(self, source_dir: Path, task_id: str) -> dict[str, Any]:
         path = source_dir / f"{task_id}.json"

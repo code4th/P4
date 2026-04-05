@@ -99,6 +99,8 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 - inspect `state/capabilities/tasks/` for the latest bounded implementation tasks generated from approved capability proposals
 - use `show-capability-tasks` when you want the runtime-facing view of pending implementation work
 - bounded tasks should not be treated as static notes; check `in-progress/`, `done/`, and `failed/` when tracing an implementation attempt
+- if a task was deferred, check its retry context before marking it failed
+- if a file-writing action completed, inspect `state/rollback/backups/` for the pre-image used by rollback hints
 
 ## Verified outputs after growth loop
 
