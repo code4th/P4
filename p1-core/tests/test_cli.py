@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from p1_core.cli import operator_action, operator_approvals, operator_enqueue_message, operator_ingest, operator_observe, operator_queue_action, operator_report, operator_run_background_job, operator_show_autonomy_state, operator_state, operator_status, operator_tick
+from p1_core.cli import operator_action, operator_approvals, operator_enqueue_message, operator_ingest, operator_observe, operator_queue_action, operator_report, operator_run_background_job, operator_show_autonomy_state, operator_show_capability_gaps, operator_state, operator_status, operator_tick
 from p1_core.core.chat_agent import ChatAgent
 from p1_core.core.conversation_store import ConversationStore
 from p1_core.core.governance_store import GovernanceStore
@@ -172,6 +172,23 @@ class OperatorCliTests(unittest.TestCase):
             self.assertEqual(queued["status"], "queued")
             self.assertEqual(tick["status"], "action_executed")
             self.assertEqual(autonomy_state["actionCounts"]["completed"], 1)
+
+    def test_operator_show_capability_gaps(self) -> None:
+        class FailingClient:
+            def __init__(self, model: str, base_url: str = "http://127.0.0.1:11434", timeout_seconds: float = 60.0) -> None:
+                self.model = model
+
+            def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+                raise RuntimeError("local backend unavailable")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("p1_core.cli.OllamaClient", FailingClient):
+                operator_enqueue_message(root, content="hello from inbox")
+                operator_tick(root)
+                payload = operator_show_capability_gaps(root)
+            self.assertEqual(payload["counts"]["total"], 1)
+            self.assertEqual(payload["gaps"][0]["source"], "autonomy.message")
 
     def test_operator_ingest_can_queue_background_analysis(self) -> None:
         class FakeClient:

@@ -118,6 +118,7 @@ class AutonomyRuntimeTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "conversation_deferred")
             self.assertEqual(openclaw.calls, 0)
+            self.assertEqual(runtime.capability_store.counts()["total"], 1)
 
     def test_run_command_is_not_treated_as_low_risk(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -152,7 +153,22 @@ class AutonomyRuntimeTests(unittest.TestCase):
             payload = runtime.show_state()
             self.assertEqual(payload["inboxCounts"]["queued"], 0)
             self.assertEqual(payload["actionCounts"]["queued"], 0)
+            self.assertIn("capabilityGapCounts", payload)
             self.assertIn("llmUsage", payload)
+
+    def test_openclaw_action_without_backend_records_capability_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+            runtime.action_store.enqueue(
+                ActionSpec(kind="read_file", backend="openclaw", inputs={"path": "prompt.md"}, risk_level="low")
+            )
+
+            result = runtime.tick_once()
+
+            self.assertEqual(result["status"], "action_executed")
+            self.assertEqual(runtime.action_store.counts()["failed"], 1)
+            self.assertEqual(runtime.capability_store.counts()["total"], 1)
 
 
 if __name__ == "__main__":
