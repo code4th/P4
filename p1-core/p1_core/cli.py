@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from p1_core.autonomy import AutonomyRuntime
+from p1_core.adapters.openclaw_runtime import OpenClawAgentTextBackend, OpenClawNodeActionBackend
 from p1_core.core.action_runtime import ActionSpec
 from p1_core.core.chat_agent import ChatAgent
 from p1_core.core.background_job_store import BackgroundJobStore
@@ -30,6 +31,18 @@ def _workspace_config(root: Path) -> dict[str, Any]:
     defaults = {
         "worker_model": "qwen3:4b-instruct",
         "background_worker_model": "gemma4:e4b",
+        "openclaw_backend": {
+            "enabled": False,
+            "agent_id": "main",
+            "thinking": "minimal",
+            "timeout_seconds": 120,
+            "node_id": None,
+            "commands": {
+                "run_command": None,
+                "read_file": None,
+                "write_file": None,
+            },
+        },
         "autonomy": {
             "local_first": True,
             "per_tick_openclaw_cap": 1,
@@ -175,10 +188,26 @@ def operator_chat(root: Path, *, message: str, model: str) -> dict[str, Any]:
 def _autonomy_runtime(root: Path) -> AutonomyRuntime:
     config = _workspace_config(root)
     local_model = str(config.get("worker_model", "qwen3:4b-instruct"))
+    openclaw_config = dict(config.get("openclaw_backend", {}))
+    openclaw_llm_backend = None
+    openclaw_action_backend = None
+    if openclaw_config.get("enabled"):
+        openclaw_llm_backend = OpenClawAgentTextBackend(
+            agent_id=str(openclaw_config.get("agent_id", "main")),
+            thinking=str(openclaw_config.get("thinking", "minimal")),
+            timeout_seconds=int(openclaw_config.get("timeout_seconds", 120)),
+        )
+        node_id = openclaw_config.get("node_id")
+        if node_id:
+            openclaw_action_backend = OpenClawNodeActionBackend(
+                node_id=str(node_id),
+                command_map=dict(openclaw_config.get("commands", {})),
+            )
     return AutonomyRuntime(
         root=root,
         local_llm_backend=OllamaClient(model=local_model),
-        openclaw_llm_backend=None,
+        openclaw_llm_backend=openclaw_llm_backend,
+        openclaw_action_backend=openclaw_action_backend,
     )
 
 
@@ -192,6 +221,14 @@ def operator_tick(root: Path) -> dict[str, Any]:
 
 def operator_show_autonomy_state(root: Path) -> dict[str, Any]:
     return _autonomy_runtime(root).show_state()
+
+
+def operator_show_capability_gaps(root: Path) -> dict[str, Any]:
+    runtime = _autonomy_runtime(root)
+    return {
+        "counts": runtime.capability_store.counts(),
+        "gaps": runtime.capability_store.list_gaps(limit=20),
+    }
 
 
 def operator_queue_action(
@@ -257,6 +294,7 @@ def parse_args() -> argparse.Namespace:
 
     subparsers.add_parser("tick", help="Run one non-blocking autonomy tick")
     subparsers.add_parser("show-autonomy-state", help="Inspect autonomy runtime state")
+    subparsers.add_parser("show-capability-gaps", help="Inspect recorded capability gaps")
 
     queue_action_parser = subparsers.add_parser("queue-action", help="Queue an autonomy action")
     queue_action_parser.add_argument("--kind", required=True)
@@ -295,6 +333,8 @@ def main() -> None:
         payload = operator_tick(root)
     elif args.subcommand == "show-autonomy-state":
         payload = operator_show_autonomy_state(root)
+    elif args.subcommand == "show-capability-gaps":
+        payload = operator_show_capability_gaps(root)
     elif args.subcommand == "queue-action":
         payload = operator_queue_action(
             root,

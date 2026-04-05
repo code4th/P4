@@ -179,7 +179,8 @@ Current interpretation:
 
 - `p1-core/` is already a viable governance and memory substrate
 - the next implementation focus is the living P1 runtime that sits on top of that substrate
-- `bin/p1` is only a temporary operator wrapper, not the final UX target
+- `bin/p1` is the current operator/runtime surface for that living runtime
+- OpenClaw backend calls should be routed through adapter code, not spread across the runtime
 
 ### 5.2 Worker
 
@@ -470,6 +471,7 @@ Current operational entrypoints:
 8. Advance one autonomy tick without keeping a daemon alive
    - `python3 -m p1_core.cli tick`
    - `python3 -m p1_core.cli show-autonomy-state`
+   - `python3 -m p1_core.cli show-capability-gaps`
 
 9. Queue a message for the living P1 runtime
    - `python3 -m p1_core.cli enqueue-message --content "What do you think about the latest state?"`
@@ -504,6 +506,8 @@ Current limitation:
 - until a deeper adapter exists, the verified external-core-backed entrypoint is `bin/p1` for autonomy and `bin/p1-agent` for status/report/approval transport
 - OpenClaw still remains a thin control plane and should not absorb P1 judgment logic
 - the new autonomy runtime is still cooperative rather than always-on, and OpenClaw-backed Plus use is intentionally conservative and not yet wired as the default deliberation lane
+- capability gaps are now recorded under `state/capabilities/gaps.jsonl`, but automatic self-extension from those gaps is not complete yet
+- the new `openclaw_backend` config block is an explicit opt-in adapter contract, not a signal to move default cognition away from local-first routing
 
 ## 9. Rollback Principles
 
@@ -527,6 +531,7 @@ Operational rollback:
 Verified in implementation:
 
 - `p1-core` unit tests passing
+- cooperative autonomy runtime and OpenClaw backend adapter unit tests passing
 - bootstrap scaffolding works
 - worker contract works
 - growth loop writes knowledge / proposal / report / event outputs

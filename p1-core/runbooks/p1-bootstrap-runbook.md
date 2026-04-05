@@ -28,6 +28,7 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
    - `python3 -m p1_core.cli enqueue-message --content "hello P1"`
    - `python3 -m p1_core.cli tick`
    - `python3 -m p1_core.cli show-autonomy-state`
+   - `python3 -m p1_core.cli show-capability-gaps`
    - `python3 -m p1_core.cli queue-action --kind append_note --inputs '{"content":"autonomy note"}'`
    - `python3 -m p1_core.cli ingest --model qwen3:4b-instruct --input-text "example observation"`
    - `python3 -m p1_core.cli ingest --model qwen3:4b-instruct --background-model gemma4:e4b --input-text "example observation"`
@@ -41,39 +42,43 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
    - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent approvals`
    - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 enqueue-message --content "hello P1"`
    - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 tick`
-9. Run the operator-surface integration check when changing lifecycle code.
+9. Keep `openclaw_backend` disabled until you explicitly want P1 to use OpenClaw as backend.
+   - inspect `config.json`
+   - set `openclaw_backend.enabled` to `true` only when you have an agent id or node command map ready
+   - keep `openclaw_backend.commands.run_command/read_file/write_file` unset until you know the node-side command names
+10. Run the operator-surface integration check when changing lifecycle code.
    - `python3 -m unittest tests.test_end_to_end -v`
    - This now covers policy rollback and proposal rollback visibility through the operator CLI.
-10. Run the real local-model smoke when changing worker/model defaults.
+11. Run the real local-model smoke when changing worker/model defaults.
    - `python3 -m p1_core.cli --root /tmp/p1-real-ollama-smoke ingest --model qwen3:4b-instruct --input-text "example observation"`
    - `python3 -m p1_core.worker.ollama_worker --port 8876 --model qwen3:4b-instruct`
-11. When validating heavier local models, do not assume the synchronous operator path is the right target.
+12. When validating heavier local models, do not assume the synchronous operator path is the right target.
    - use direct worker or client checks first
    - prefer longer time budgets for `gemma4:e4b` and `gemma4:26b`
    - treat them as background-analysis candidates rather than interactive defaults
-12. Use this provisional model-role split until a queue-backed job runner exists.
+13. Use this provisional model-role split until a queue-backed job runner exists.
    - `qwen3:4b-instruct` for `fast_judge`
    - `gemma4:e4b` for `background_analysis`
    - `gemma4:26b` only for slow background analysis and audit-style work
-13. Use queued background analysis when a heavier local model should not block the interactive path.
+14. Use queued background analysis when a heavier local model should not block the interactive path.
    - fast path writes immediate summary and classification plus a queued background job
    - background path later runs lesson extraction and the downstream proposal / governance loop
-14. Confirm bounded autonomous actions when low-risk proposals are promoted.
+15. Confirm bounded autonomous actions when low-risk proposals are promoted.
    - inspect `state/experiments/actions/`
    - inspect `state/experiments/latest-experiment.json`
-15. Inspect long-horizon governance feedback when rerun deferrals accumulate.
+16. Inspect long-horizon governance feedback when rerun deferrals accumulate.
    - inspect `state/governance/latest-governance.json`
-16. Scaffold a dedicated OpenClaw agent slot when you are ready to expose P1 as its own agent.
+17. Scaffold a dedicated OpenClaw agent slot when you are ready to expose P1 as its own agent.
    - `python3 -m p1_core.bootstrap.install_openclaw_agent --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1 --source-agent main`
    - this creates `~/.openclaw/agents/p1/agent/p1-openclaw-entry.json`
    - provider/auth settings are copied from the chosen source agent, while P1 identity and transport stay in the workspace
-17. Generate a safe config patch before registering P1 in `openclaw.json`.
+18. Generate a safe config patch before registering P1 in `openclaw.json`.
    - `python3 -m p1_core.bootstrap.generate_openclaw_config_patch --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1`
    - this writes `agent/openclaw-config-agent-entry.json`
    - and `agent/openclaw-config-apply.md`
    - the generated entry is intentionally minimal so it stays schema-compatible with OpenClaw
    - keep P1-specific identity and transport details in `agent/manifest.json` and `~/.openclaw/agents/p1/agent/p1-openclaw-entry.json`
-18. Apply the generated patch only when you are ready to register P1 in OpenClaw.
+19. Apply the generated patch only when you are ready to register P1 in OpenClaw.
    - `python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1`
    - rollback with `python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --agent-name p1 --rollback`
    - both commands create timestamped backups by default
@@ -84,6 +89,8 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 - prefer `tick`-based advancement with persisted `next_wake_at`
 - prefer local LLMs before any OpenClaw-backed Plus path
 - use OpenClaw-backed Plus only for higher-value cases once an adapter is wired
+- keep `openclaw_backend` disabled by default and opt in explicitly
+- inspect `state/capabilities/gaps.jsonl` or `show-capability-gaps` when P1 hits missing hand/foot capability boundaries
 
 ## Verified outputs after growth loop
 

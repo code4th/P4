@@ -7,9 +7,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from p1_core.core.action_runtime import ActionExecutor, ActionPolicy, ActionSpec, ActionStore
+from p1_core.core.action_runtime import ActionExecutor, ActionPolicy, ActionSpec, ActionStore, OpenClawActionBackend
 from p1_core.core.background_job_store import BackgroundJobStore
 from p1_core.core.chat_agent import ChatAgent
+from p1_core.core.capability_store import CapabilityStore
 from p1_core.core.conversation_store import ConversationStore
 from p1_core.core.governance_store import GovernanceStore
 from p1_core.core.llm_runtime import LLMRouter, LLMUsageStore, TextLLMBackend
@@ -88,11 +89,13 @@ class AutonomyRuntime:
     root: Path
     local_llm_backend: TextLLMBackend
     openclaw_llm_backend: TextLLMBackend | None = None
+    openclaw_action_backend: OpenClawActionBackend | None = None
     action_store: ActionStore = field(init=False)
     background_jobs: BackgroundJobStore = field(init=False)
     world_store: WorldStore = field(init=False)
     conversation_store: ConversationStore = field(init=False)
     governance_store: GovernanceStore = field(init=False)
+    capability_store: CapabilityStore = field(init=False)
     inbox: InboxStore = field(init=False)
     usage_store: LLMUsageStore = field(init=False)
     executor: ActionExecutor = field(init=False)
@@ -104,12 +107,14 @@ class AutonomyRuntime:
         self.world_store = WorldStore(self.root / "state" / "world")
         self.conversation_store = ConversationStore(self.root / "state" / "conversation")
         self.governance_store = GovernanceStore(self.root / "state" / "governance")
+        self.capability_store = CapabilityStore(self.root / "state" / "capabilities")
         self.inbox = InboxStore(self.state_dir / "inbox")
         self.usage_store = LLMUsageStore(self.root / "state" / "budgets")
         self.executor = ActionExecutor(
             root=self.root,
             background_job_store=self.background_jobs,
             world_store=self.world_store,
+            openclaw_backend=self.openclaw_action_backend,
         )
 
     @property
@@ -165,6 +170,8 @@ class AutonomyRuntime:
             "inboxCounts": self.inbox.counts(),
             "actionCounts": self.action_store.counts(),
             "backgroundJobCounts": self.background_jobs.counts(),
+            "capabilityGapCounts": self.capability_store.counts(),
+            "recentCapabilityGaps": self.capability_store.list_gaps(limit=5),
             "llmUsage": self.usage_store.counts(),
         }
 
@@ -231,6 +238,13 @@ class AutonomyRuntime:
         try:
             routed = router.route_text(system_prompt, user_prompt, allow_openclaw=False)
         except Exception as exc:
+            self.capability_store.record_gap(
+                title="conversation backend unavailable",
+                detail=f"local reply generation failed without OpenClaw fallback: {exc}",
+                source="autonomy.message",
+                severity="medium",
+                metadata={"message_id": message["message_id"]},
+            )
             next_wake = moment + timedelta(seconds=int(policy.get("default_wake_seconds", 300)))
             self.save_state(
                 {
@@ -303,6 +317,13 @@ class AutonomyRuntime:
                 return {"status": "approval_required", "action": queued, "next_wake_at": _iso(next_wake)}
             if decision == "reject":
                 rejected = self.action_store.mark_failed(spec.action_id, reason)
+                self.capability_store.record_gap(
+                    title="unsupported autonomous action",
+                    detail=reason,
+                    source="autonomy.action",
+                    severity="medium",
+                    metadata={"action_id": spec.action_id, "kind": spec.kind, "backend": spec.backend},
+                )
                 next_wake = moment + timedelta(seconds=300)
                 self.save_state(
                     {
@@ -332,6 +353,14 @@ class AutonomyRuntime:
                 stored = self.action_store.mark_completed(spec.action_id, result)
             else:
                 stored = self.action_store.mark_failed(spec.action_id, result.stderr or "action failed")
+                if "not configured" in (result.stderr or "") or "unsupported" in (result.stderr or ""):
+                    self.capability_store.record_gap(
+                        title="missing backend capability",
+                        detail=result.stderr or "action backend capability is missing",
+                        source="autonomy.action",
+                        severity="high" if spec.backend == "openclaw" else "medium",
+                        metadata={"action_id": spec.action_id, "kind": spec.kind, "backend": spec.backend},
+                    )
             next_wake = moment + timedelta(seconds=300)
             self.save_state(
                 {

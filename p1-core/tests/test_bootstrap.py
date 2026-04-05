@@ -32,6 +32,8 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(config["workspace_kind"], "openclaw-system-agent")
             self.assertEqual(config["autonomy"]["mode"], "cooperative_tick")
             self.assertTrue(config["autonomy"]["local_first"])
+            self.assertFalse(config["openclaw_backend"]["enabled"])
+            self.assertIn("run_command", config["openclaw_backend"]["commands"])
             self.assertEqual(manifest["entrypoint"]["wrapper"], "bin/p1-agent")
 
 

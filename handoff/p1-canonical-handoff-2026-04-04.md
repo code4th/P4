@@ -370,6 +370,7 @@ python3 -m p1_core.cli ingest --model qwen3:4b-instruct --input-text "example ob
 python3 -m p1_core.cli chat --model qwen3:4b-instruct --message "What do you think about the latest state?"
 python3 -m p1_core.cli enqueue-message --content "What do you think about the latest state?"
 python3 -m p1_core.cli tick
+python3 -m p1_core.cli show-capability-gaps
 python3 -m p1_core.cli observe --text "A tool run failed during retrieval."
 python3 -m p1_core.cli action --kind note --payload "prepare a bounded follow-up action"
 python3 -m p1_core.cli rollback --target proposals --snapshot-id 2026-04-04-proposals
@@ -409,12 +410,15 @@ python3 -m p1_core.cli queue-action --kind append_note --inputs '{"content":"aut
 - local-first で LLM を使う
 - OpenClaw-backed Plus を毎 tick 使う前提は置かない
 - low-risk queued action を自分で実行できる
+- missing backend / unsupported action を `state/capabilities/gaps.jsonl` に記録できる
+- `config.json` の `openclaw_backend` を有効化したときだけ OpenClaw CLI adapter を backend として使う
 
 ## 8. 検証済み事項
 
 この turn で確認済み:
 
 - `p1-core` 単体テスト成功
+- OpenClaw backend adapter の unit tests が通ることを確認
 - bootstrap scaffolder による workspace 生成成功
 - example report 生成成功
 - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent status` 成功

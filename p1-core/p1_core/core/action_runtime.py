@@ -6,7 +6,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from p1_core.core.background_job_store import BackgroundJobStore
 from p1_core.core.governance_store import compare_risk_levels
@@ -35,6 +35,14 @@ INTRINSIC_ACTION_RISK = {
 }
 
 MAX_AUTONOMOUS_TIMEOUT_SECONDS = 15
+
+
+class OpenClawActionBackend(Protocol):
+    def run_command(self, *, argv: list[str], cwd: str, timeout_seconds: int) -> dict[str, Any]: ...
+
+    def read_file(self, *, path: str) -> dict[str, Any]: ...
+
+    def write_file(self, *, path: str, content: str) -> dict[str, Any]: ...
 
 
 @dataclass(slots=True)
@@ -186,6 +194,7 @@ class ActionExecutor:
     root: Path
     background_job_store: BackgroundJobStore
     world_store: WorldStore
+    openclaw_backend: OpenClawActionBackend | None = None
 
     def execute(self, spec: ActionSpec) -> ActionResult:
         started_at = datetime.now(UTC)
@@ -204,13 +213,25 @@ class ActionExecutor:
                 rollback_hint = f"delete {note_path}"
             elif spec.kind == "read_file":
                 path = _resolve_within_root(self.root, str(spec.inputs["path"]))
-                stdout = path.read_text(encoding="utf-8")[:10000]
+                if spec.backend == "openclaw":
+                    if self.openclaw_backend is None:
+                        raise RuntimeError("openclaw action backend is not configured")
+                    payload = self.openclaw_backend.read_file(path=str(path))
+                    stdout = json.dumps(payload, ensure_ascii=False)
+                else:
+                    stdout = path.read_text(encoding="utf-8")[:10000]
                 artifacts.append(str(path))
             elif spec.kind == "write_file":
                 path = _resolve_within_root(self.root, str(spec.inputs["path"]))
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(str(spec.inputs.get("content", "")), encoding="utf-8")
-                stdout = f"wrote file {path}"
+                if spec.backend == "openclaw":
+                    if self.openclaw_backend is None:
+                        raise RuntimeError("openclaw action backend is not configured")
+                    payload = self.openclaw_backend.write_file(path=str(path), content=str(spec.inputs.get("content", "")))
+                    stdout = json.dumps(payload, ensure_ascii=False)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(str(spec.inputs.get("content", "")), encoding="utf-8")
+                    stdout = f"wrote file {path}"
                 artifacts.append(str(path))
                 rollback_hint = f"restore previous content for {path} if needed"
             elif spec.kind == "run_command":
@@ -221,18 +242,25 @@ class ActionExecutor:
                     int(spec.inputs.get("timeout_seconds", MAX_AUTONOMOUS_TIMEOUT_SECONDS)),
                     MAX_AUTONOMOUS_TIMEOUT_SECONDS,
                 )
-                completed = subprocess.run(
-                    argv,
-                    cwd=str(_resolve_within_root(self.root, str(spec.inputs.get('cwd', '.')))),
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_seconds,
-                    check=False,
-                )
-                stdout = completed.stdout.strip()
-                stderr = completed.stderr.strip()
-                if completed.returncode != 0:
-                    raise RuntimeError(f"command exited with code {completed.returncode}")
+                cwd = str(_resolve_within_root(self.root, str(spec.inputs.get("cwd", "."))))
+                if spec.backend == "openclaw":
+                    if self.openclaw_backend is None:
+                        raise RuntimeError("openclaw action backend is not configured")
+                    payload = self.openclaw_backend.run_command(argv=argv, cwd=cwd, timeout_seconds=timeout_seconds)
+                    stdout = json.dumps(payload, ensure_ascii=False)
+                else:
+                    completed = subprocess.run(
+                        argv,
+                        cwd=cwd,
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_seconds,
+                        check=False,
+                    )
+                    stdout = completed.stdout.strip()
+                    stderr = completed.stderr.strip()
+                    if completed.returncode != 0:
+                        raise RuntimeError(f"command exited with code {completed.returncode}")
             elif spec.kind == "queue_background_analysis":
                 queued = self.background_job_store.enqueue(
                     job_type="background_analysis",

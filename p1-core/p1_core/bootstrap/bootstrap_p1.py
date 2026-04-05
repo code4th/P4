@@ -19,6 +19,18 @@ TEMPLATES = {
         "worker_base_url": "http://127.0.0.1:8765",
         "worker_model": "qwen3:4b-instruct",
         "background_worker_model": "gemma4:e4b",
+        "openclaw_backend": {
+            "enabled": False,
+            "agent_id": "main",
+            "thinking": "minimal",
+            "timeout_seconds": 120,
+            "node_id": None,
+            "commands": {
+                "run_command": None,
+                "read_file": None,
+                "write_file": None,
+            },
+        },
         "worker_endpoints": ["/summarize", "/classify", "/draft_lessons"],
         "knowledge_states": ["raw", "candidate", "deferred", "active", "retired"],
         "promotion_mode": "proposal_only",
@@ -79,10 +91,11 @@ RUNBOOK_TEMPLATE = """# P1 Runbook
 4. Treat P1 as a living runtime, but do not keep a permanently occupying process alive in the first implementation.
 5. Use `bin/p1 enqueue-message` and `bin/p1 tick` to advance P1 conservatively.
 6. Prefer local LLM usage before any OpenClaw-backed Plus path.
-7. Use `observe`, `action`, `status`, and `report` as support commands behind that front door.
-6. Write all reports under `state/reports/`.
-7. Treat `state/proposals/` as approval-gated output.
-8. Use `agent/manifest.json` and `bin/p1-agent` when wiring P1 into an OpenClaw-visible agent slot.
+7. Enable `openclaw_backend` in `config.json` only when you are ready to let P1 use OpenClaw as a backend.
+8. Use `observe`, `action`, `status`, and `report` as support commands behind that front door.
+9. Write all reports under `state/reports/`.
+10. Treat `state/proposals/` as approval-gated output.
+11. Use `agent/manifest.json` and `bin/p1-agent` when wiring P1 into an OpenClaw-visible agent slot.
 
 Rollback:
 
@@ -154,6 +167,7 @@ def scaffold_workspace(root: Path, force: bool = False) -> list[Path]:
         root / "state" / "policies",
         root / "state" / "proposals",
         root / "state" / "governance",
+        root / "state" / "capabilities",
         root / "state" / "experiments",
         root / "state" / "conversation",
         root / "state" / "world",
