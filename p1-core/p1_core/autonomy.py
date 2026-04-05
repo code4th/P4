@@ -199,6 +199,8 @@ class AutonomyRuntime:
             "recentCapabilityProposals": self.capability_store.list_proposals(limit=5),
             "capabilityReviewCounts": self.capability_store.review_counts(),
             "recentCapabilityReviews": self.capability_store.list_reviews(limit=5),
+            "capabilityExecutionCounts": self.capability_store.execution_counts(),
+            "recentCapabilityExecutions": self.capability_store.list_executions(limit=5),
             "llmUsage": self.usage_store.counts(),
         }
 
@@ -456,6 +458,25 @@ class AutonomyRuntime:
                 "next_wake_at": _iso(next_wake),
             }
 
+        executable_review = self._next_executable_capability_review()
+        if executable_review:
+            execution = self._materialize_capability_execution(executable_review)
+            next_wake = moment + timedelta(seconds=300)
+            self.save_state(
+                {
+                    **state,
+                    "current_focus": "capability_execution",
+                    "last_tick_at": _iso(moment),
+                    "next_wake_at": _iso(next_wake),
+                    "last_tick_summary": f"capability execution queued for {executable_review['proposal_id']}",
+                }
+            )
+            return {
+                "status": "capability_execution_queued",
+                "execution": execution,
+                "next_wake_at": _iso(next_wake),
+            }
+
         idle_seconds = int(state.get("budget_policy", {}).get("idle_wake_seconds", 900))
         next_wake = moment + timedelta(seconds=idle_seconds)
         self.save_state(
@@ -549,6 +570,61 @@ class AutonomyRuntime:
             evaluation=evaluation,
             governance=governance,
             cloud_request_path=cloud_request_path,
+        )
+
+    def _next_executable_capability_review(self) -> dict[str, Any] | None:
+        for review in reversed(self.capability_store.list_reviews(limit=100)):
+            review_id = str(review.get("review_id"))
+            if self.capability_store.has_execution_for_review(review_id):
+                continue
+            next_step = str(review.get("governance", {}).get("next_step", ""))
+            proposal = review.get("governance", {}).get("proposal", {})
+            proposal_id = str(proposal.get("proposal_id", ""))
+            if next_step == "autonomous_apply":
+                return review
+            if next_step == "await_cloud_approval":
+                cloud_response = self.capability_cloud_store.load_response(proposal_id)
+                if cloud_response and cloud_response.get("decision") == "approve":
+                    return review
+                if cloud_response and cloud_response.get("decision") == "reject":
+                    self.capability_store.record_execution(
+                        review_id=review_id,
+                        proposal_id=proposal_id,
+                        action_id=None,
+                        status="rejected",
+                        detail="capability proposal rejected by cloud review",
+                        metadata={"cloud_response": cloud_response},
+                    )
+        return None
+
+    def _materialize_capability_execution(self, review: dict[str, Any]) -> dict[str, Any]:
+        proposal = review.get("governance", {}).get("proposal", {})
+        summary = str(proposal.get("summary", "capability extension"))
+        gap_id = str(review.get("gap_id"))
+        action = self.action_store.enqueue(
+            ActionSpec(
+                kind="append_note",
+                inputs={
+                    "content": (
+                        f"[self-extension task]\n"
+                        f"proposal_id: {proposal.get('proposal_id')}\n"
+                        f"gap_id: {gap_id}\n"
+                        f"summary: {summary}\n"
+                        f"detail: {proposal.get('detail', '')}\n"
+                    )
+                },
+                risk_level="low",
+                backend="local",
+                goal="materialize approved capability extension as an audited task",
+            )
+        )
+        return self.capability_store.record_execution(
+            review_id=str(review["review_id"]),
+            proposal_id=str(proposal.get("proposal_id")),
+            action_id=str(action["action_id"]),
+            status="queued_action",
+            detail="queued bounded self-extension task",
+            metadata={"action_kind": "append_note", "gap_id": gap_id},
         )
 
     def _should_sleep(self, state: dict[str, Any], moment: datetime, *, has_inbox: bool) -> bool:

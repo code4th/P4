@@ -157,6 +157,7 @@ class AutonomyRuntimeTests(unittest.TestCase):
             self.assertIn("capabilityGapCounts", payload)
             self.assertIn("capabilityProposalCounts", payload)
             self.assertIn("capabilityReviewCounts", payload)
+            self.assertIn("capabilityExecutionCounts", payload)
             self.assertIn("llmUsage", payload)
 
     def test_openclaw_action_without_backend_records_capability_gap(self) -> None:
@@ -210,6 +211,31 @@ class AutonomyRuntimeTests(unittest.TestCase):
             self.assertEqual(runtime.capability_store.review_counts()["approval_pending"], 1)
             reviews = runtime.capability_store.list_reviews(limit=1)
             self.assertEqual(reviews[0]["governance"]["next_step"], "await_cloud_approval")
+
+    def test_approved_capability_review_queues_bounded_execution_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+            proposal = runtime.capability_store.record_proposal(
+                gap_id="capgap:test",
+                summary="Implement missing capability: low severity task",
+                proposal_type="capability_extension",
+                risk_level="low",
+                requires_approval=False,
+                detail="safe low-risk task",
+            )
+            review = runtime.capability_store.record_review(
+                proposal_id=proposal["proposal_id"],
+                gap_id=proposal["gap_id"],
+                evaluation={"decision": "candidate"},
+                governance={"proposal": proposal, "next_step": "autonomous_apply"},
+            )
+
+            result = runtime.tick_once()
+
+            self.assertEqual(result["status"], "capability_execution_queued")
+            self.assertEqual(runtime.capability_store.execution_counts()["queued_action"], 1)
+            self.assertEqual(runtime.action_store.counts()["queued"], 1)
 
 
 if __name__ == "__main__":

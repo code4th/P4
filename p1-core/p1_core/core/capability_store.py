@@ -102,6 +102,10 @@ class CapabilityStore:
     def reviews_path(self) -> Path:
         return self.root / "reviews.jsonl"
 
+    @property
+    def executions_path(self) -> Path:
+        return self.root / "executions.jsonl"
+
     def list_proposals(self, *, limit: int = 20) -> list[dict[str, Any]]:
         if not self.proposals_path.exists():
             return []
@@ -166,3 +170,48 @@ class CapabilityStore:
 
     def has_review_for_proposal(self, proposal_id: str) -> bool:
         return any(row.get("proposal_id") == proposal_id for row in self.list_reviews(limit=100000))
+
+    def record_execution(
+        self,
+        *,
+        review_id: str,
+        proposal_id: str,
+        action_id: str | None,
+        status: str,
+        detail: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "execution_id": f"capexec:{uuid.uuid4()}",
+            "review_id": review_id,
+            "proposal_id": proposal_id,
+            "action_id": action_id,
+            "status": status,
+            "detail": detail,
+            "metadata": metadata or {},
+            "recorded_at": _now(),
+        }
+        with self.executions_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return payload
+
+    def list_executions(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        if not self.executions_path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        for line in self.executions_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            rows.append(json.loads(line))
+        return rows[-limit:]
+
+    def execution_counts(self) -> dict[str, int]:
+        rows = self.list_executions(limit=100000)
+        return {
+            "total": len(rows),
+            "queued_action": sum(1 for row in rows if row.get("status") == "queued_action"),
+            "rejected": sum(1 for row in rows if row.get("status") == "rejected"),
+        }
+
+    def has_execution_for_review(self, review_id: str) -> bool:
+        return any(row.get("review_id") == review_id for row in self.list_executions(limit=100000))

@@ -93,6 +93,7 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 - inspect `state/capabilities/gaps.jsonl` or `show-capability-gaps` when P1 hits missing hand/foot capability boundaries
 - inspect `state/capabilities/proposals.jsonl` as the first self-extension staging area
 - inspect `state/capabilities/reviews.jsonl` and `state/capabilities/cloud_evaluation/requests/` for approval-required capability work
+- approved capability work is first materialized as a bounded task note before any stronger self-modification path
 
 ## Verified outputs after growth loop
 
