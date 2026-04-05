@@ -97,6 +97,7 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 - inspect `state/capabilities/executions.jsonl` to confirm whether that bounded task completed, failed, or left a rollback hint
 - inspect `state/autonomy/inbox/deferred/` and `state/actions/deferred/` when work is postponed by conservative policy; these entries are retried later rather than discarded
 - inspect `state/capabilities/tasks/` for the latest bounded implementation tasks generated from approved capability proposals
+- use `show-capability-tasks` when you want the runtime-facing view of pending implementation work
 
 ## Verified outputs after growth loop
 

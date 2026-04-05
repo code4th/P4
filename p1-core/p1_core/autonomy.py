@@ -11,6 +11,7 @@ from p1_core.core.action_runtime import ActionExecutor, ActionPolicy, ActionSpec
 from p1_core.core.background_job_store import BackgroundJobStore
 from p1_core.core.chat_agent import ChatAgent
 from p1_core.core.capability_store import CapabilityStore
+from p1_core.core.capability_task_store import CapabilityTaskStore
 from p1_core.core.cloud_evaluation import CloudEvaluationStore
 from p1_core.core.conversation_store import ConversationStore
 from p1_core.core.evaluator import Evaluator
@@ -148,6 +149,7 @@ class AutonomyRuntime:
     conversation_store: ConversationStore = field(init=False)
     governance_store: GovernanceStore = field(init=False)
     capability_store: CapabilityStore = field(init=False)
+    capability_task_store: CapabilityTaskStore = field(init=False)
     capability_cloud_store: CloudEvaluationStore = field(init=False)
     inbox: InboxStore = field(init=False)
     usage_store: LLMUsageStore = field(init=False)
@@ -164,6 +166,7 @@ class AutonomyRuntime:
         self.conversation_store = ConversationStore(self.root / "state" / "conversation")
         self.governance_store = GovernanceStore(self.root / "state" / "governance")
         self.capability_store = CapabilityStore(self.root / "state" / "capabilities")
+        self.capability_task_store = CapabilityTaskStore(self.root / "state" / "capabilities")
         self.capability_cloud_store = CloudEvaluationStore(self.root / "state" / "capabilities" / "cloud_evaluation")
         self.inbox = InboxStore(self.state_dir / "inbox")
         self.usage_store = LLMUsageStore(self.root / "state" / "budgets")
@@ -238,6 +241,8 @@ class AutonomyRuntime:
             "recentCapabilityReviews": self.capability_store.list_reviews(limit=5),
             "capabilityExecutionCounts": self.capability_store.execution_counts(),
             "recentCapabilityExecutions": self.capability_store.list_executions(limit=5),
+            "capabilityTaskCounts": self.capability_task_store.counts(),
+            "recentCapabilityTasks": self.capability_task_store.list_tasks(limit=5),
             "llmUsage": self.usage_store.counts(),
         }
 
@@ -520,6 +525,25 @@ class AutonomyRuntime:
                 "next_wake_at": _iso(next_wake),
             }
 
+        pending_task = self._next_pending_capability_task()
+        if pending_task:
+            execution = self._materialize_task_execution(pending_task)
+            next_wake = moment + timedelta(seconds=300)
+            self.save_state(
+                {
+                    **state,
+                    "current_focus": "capability_task_execution",
+                    "last_tick_at": _iso(moment),
+                    "next_wake_at": _iso(next_wake),
+                    "last_tick_summary": f"capability task planned for {pending_task['task_id']}",
+                }
+            )
+            return {
+                "status": "capability_task_planned",
+                "execution": execution,
+                "next_wake_at": _iso(next_wake),
+            }
+
         idle_seconds = int(state.get("budget_policy", {}).get("idle_wake_seconds", 900))
         next_wake = moment + timedelta(seconds=idle_seconds)
         self.save_state(
@@ -652,7 +676,7 @@ class AutonomyRuntime:
         gap_id = str(review.get("gap_id"))
         action = self.action_store.enqueue(
             ActionSpec(
-                kind="write_capability_task",
+                kind="plan_capability_task",
                 inputs={
                     "proposal_id": proposal.get("proposal_id"),
                     "gap_id": gap_id,
@@ -676,8 +700,41 @@ class AutonomyRuntime:
             proposal_id=str(proposal.get("proposal_id")),
             action_id=str(action["action_id"]),
             status="queued_action",
-            detail="queued bounded self-extension implementation task",
-            metadata={"action_kind": "write_capability_task", "gap_id": gap_id},
+            detail="queued bounded self-extension implementation plan",
+            metadata={"action_kind": "plan_capability_task", "gap_id": gap_id},
+        )
+
+    def _next_pending_capability_task(self) -> dict[str, Any] | None:
+        return self.capability_task_store.next_task()
+
+    def _materialize_task_execution(self, task: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(task.get("task_id"))
+        target_files = task.get("target_files", [])
+        if not target_files:
+            return self.capability_store.record_execution(
+                review_id=f"taskreview:{task_id}",
+                proposal_id=str(task.get("proposal_id", task_id)),
+                action_id=None,
+                status="planned",
+                detail="task has no target files yet; awaiting concrete implementation scope",
+                metadata={"task_id": task_id, "acceptance_checks": task.get("acceptance_checks", [])},
+            )
+        action = self.action_store.enqueue(
+            ActionSpec(
+                kind="read_file",
+                inputs={"path": str(target_files[0])},
+                risk_level="low",
+                backend="local",
+                goal="inspect first target file for bounded implementation task",
+            )
+        )
+        return self.capability_store.record_execution(
+            review_id=f"taskreview:{task_id}",
+            proposal_id=str(task.get("proposal_id", task_id)),
+            action_id=str(action["action_id"]),
+            status="queued_action",
+            detail="queued bounded task inspection action",
+            metadata={"task_id": task_id, "action_kind": "read_file", "target_file": str(target_files[0])},
         )
 
     def _sync_capability_execution(self, action_id: str, action_record: dict[str, Any]) -> None:

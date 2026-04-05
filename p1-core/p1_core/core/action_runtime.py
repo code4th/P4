@@ -37,6 +37,7 @@ def _resolve_within_root(root: Path, relative_path: str) -> Path:
 INTRINSIC_ACTION_RISK = {
     "append_note": "low",
     "write_capability_task": "low",
+    "plan_capability_task": "low",
     "read_file": "low",
     "ingest_observation": "low",
     "queue_background_analysis": "low",
@@ -277,6 +278,27 @@ class ActionExecutor:
                 }
                 task_path.write_text(json.dumps(task_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
                 stdout = f"wrote capability task to {task_path}"
+                artifacts.append(str(task_path))
+                rollback_hint = f"delete {task_path}"
+            elif spec.kind == "plan_capability_task":
+                task_dir = self.root / "state" / "capabilities" / "tasks"
+                task_dir.mkdir(parents=True, exist_ok=True)
+                task_id = str(spec.action_id).replace("action:", "task:")
+                task_path = task_dir / f"{task_id}.json"
+                task_payload = {
+                    "task_id": task_id,
+                    "status": "pending",
+                    "source_action_id": spec.action_id,
+                    "proposal_id": spec.inputs.get("proposal_id"),
+                    "gap_id": spec.inputs.get("gap_id"),
+                    "summary": spec.inputs.get("summary"),
+                    "implementation_scope": spec.inputs.get("implementation_scope", "bounded_internal_task"),
+                    "target_files": spec.inputs.get("target_files", []),
+                    "acceptance_checks": spec.inputs.get("acceptance_checks", []),
+                    "created_at": _timestamp(),
+                }
+                task_path.write_text(json.dumps(task_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                stdout = f"planned capability task at {task_path}"
                 artifacts.append(str(task_path))
                 rollback_hint = f"delete {task_path}"
             elif spec.kind == "read_file":

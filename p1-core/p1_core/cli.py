@@ -234,6 +234,16 @@ def operator_show_capability_gaps(root: Path) -> dict[str, Any]:
         "reviews": runtime.capability_store.list_reviews(limit=20),
         "executionCounts": runtime.capability_store.execution_counts(),
         "executions": runtime.capability_store.list_executions(limit=20),
+        "taskCounts": runtime.capability_task_store.counts(),
+        "tasks": runtime.capability_task_store.list_tasks(limit=20),
+    }
+
+
+def operator_show_capability_tasks(root: Path) -> dict[str, Any]:
+    runtime = _autonomy_runtime(root)
+    return {
+        "taskCounts": runtime.capability_task_store.counts(),
+        "tasks": runtime.capability_task_store.list_tasks(limit=20),
     }
 
 
@@ -301,6 +311,7 @@ def parse_args() -> argparse.Namespace:
     subparsers.add_parser("tick", help="Run one non-blocking autonomy tick")
     subparsers.add_parser("show-autonomy-state", help="Inspect autonomy runtime state")
     subparsers.add_parser("show-capability-gaps", help="Inspect recorded capability gaps")
+    subparsers.add_parser("show-capability-tasks", help="Inspect bounded implementation tasks")
 
     queue_action_parser = subparsers.add_parser("queue-action", help="Queue an autonomy action")
     queue_action_parser.add_argument("--kind", required=True)
@@ -341,6 +352,8 @@ def main() -> None:
         payload = operator_show_autonomy_state(root)
     elif args.subcommand == "show-capability-gaps":
         payload = operator_show_capability_gaps(root)
+    elif args.subcommand == "show-capability-tasks":
+        payload = operator_show_capability_tasks(root)
     elif args.subcommand == "queue-action":
         payload = operator_queue_action(
             root,

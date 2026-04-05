@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from p1_core.cli import operator_action, operator_approvals, operator_enqueue_message, operator_ingest, operator_observe, operator_queue_action, operator_report, operator_run_background_job, operator_show_autonomy_state, operator_show_capability_gaps, operator_state, operator_status, operator_tick
+from p1_core.cli import operator_action, operator_approvals, operator_enqueue_message, operator_ingest, operator_observe, operator_queue_action, operator_report, operator_run_background_job, operator_show_autonomy_state, operator_show_capability_gaps, operator_show_capability_tasks, operator_state, operator_status, operator_tick
 from p1_core.core.chat_agent import ChatAgent
 from p1_core.core.conversation_store import ConversationStore
 from p1_core.core.governance_store import GovernanceStore
@@ -250,6 +250,40 @@ class OperatorCliTests(unittest.TestCase):
                 view = operator_show_capability_gaps(root)
             self.assertEqual(payload["status"], "capability_execution_queued")
             self.assertEqual(view["executionCounts"]["queued_action"], 1)
+
+    def test_show_capability_tasks_lists_planned_tasks(self) -> None:
+        class FakeClient:
+            def __init__(self, model: str, base_url: str = "http://127.0.0.1:11434", timeout_seconds: float = 60.0) -> None:
+                self.model = model
+
+            def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+                return "local autonomy reply"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("p1_core.cli.OllamaClient", FakeClient):
+                runtime = operator_show_autonomy_state(root)
+                from p1_core.autonomy import AutonomyRuntime
+                aruntime = AutonomyRuntime(root=root, local_llm_backend=FakeClient("qwen3:4b-instruct"))
+                proposal = aruntime.capability_store.record_proposal(
+                    gap_id="capgap:test",
+                    summary="Implement missing capability: low severity task",
+                    proposal_type="capability_extension",
+                    risk_level="low",
+                    requires_approval=False,
+                    detail="safe low-risk task",
+                )
+                aruntime.capability_store.record_review(
+                    proposal_id=proposal["proposal_id"],
+                    gap_id=proposal["gap_id"],
+                    evaluation={"decision": "candidate"},
+                    governance={"proposal": proposal, "next_step": "autonomous_apply"},
+                )
+                operator_tick(root)
+                operator_tick(root)
+                tasks = operator_show_capability_tasks(root)
+            self.assertEqual(tasks["taskCounts"]["pending"], 1)
+            self.assertEqual(tasks["tasks"][0]["status"], "pending")
 
     def test_capability_execution_completes_and_is_auditable(self) -> None:
         class FakeClient:

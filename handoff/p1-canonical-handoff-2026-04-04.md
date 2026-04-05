@@ -419,6 +419,7 @@ python3 -m p1_core.cli queue-action --kind append_note --inputs '{"content":"aut
 - deferred inbox と deferred action は専用 queue に移し、retry 時刻を過ぎたら再投入する
 - deferred retry は上限回数で打ち切る
 - approved capability proposal は `state/capabilities/tasks/*.json` に bounded implementation task を生成する
+- bounded implementation task は autonomy surface から inspect 可能で、次の tick で処理候補になる
 
 ## 8. 検証済み事項
 
