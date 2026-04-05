@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from p1_core.cli import operator_action, operator_approvals, operator_ingest, operator_observe, operator_report, operator_run_background_job, operator_state, operator_status
+from p1_core.cli import operator_action, operator_approvals, operator_enqueue_message, operator_ingest, operator_observe, operator_queue_action, operator_report, operator_run_background_job, operator_show_autonomy_state, operator_state, operator_status, operator_tick
 from p1_core.core.chat_agent import ChatAgent
 from p1_core.core.conversation_store import ConversationStore
 from p1_core.core.governance_store import GovernanceStore
@@ -135,6 +135,43 @@ class OperatorCliTests(unittest.TestCase):
             state = operator_state(root)
             self.assertEqual(payload["reply"], "P1 response")
             self.assertEqual(len(state["recentConversation"]), 2)
+
+    def test_operator_enqueue_message_and_tick_process_conversation(self) -> None:
+        class FakeClient:
+            def __init__(self, model: str, base_url: str = "http://127.0.0.1:11434", timeout_seconds: float = 60.0) -> None:
+                self.model = model
+
+            def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+                return "local autonomy reply"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("p1_core.cli.OllamaClient", FakeClient):
+                queued = operator_enqueue_message(root, content="hello from inbox")
+                tick = operator_tick(root)
+                autonomy_state = operator_show_autonomy_state(root)
+            self.assertEqual(queued["status"], "queued")
+            self.assertEqual(tick["status"], "replied")
+            self.assertEqual(tick["reply_backend"], "local")
+            self.assertEqual(autonomy_state["inboxCounts"]["queued"], 0)
+
+    def test_operator_queue_action_and_tick_execute_it(self) -> None:
+        class FakeClient:
+            def __init__(self, model: str, base_url: str = "http://127.0.0.1:11434", timeout_seconds: float = 60.0) -> None:
+                self.model = model
+
+            def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+                return "unused"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("p1_core.cli.OllamaClient", FakeClient):
+                queued = operator_queue_action(root, kind="append_note", inputs={"content": "queued from cli"})
+                tick = operator_tick(root)
+                autonomy_state = operator_show_autonomy_state(root)
+            self.assertEqual(queued["status"], "queued")
+            self.assertEqual(tick["status"], "action_executed")
+            self.assertEqual(autonomy_state["actionCounts"]["completed"], 1)
 
     def test_operator_ingest_can_queue_background_analysis(self) -> None:
         class FakeClient:

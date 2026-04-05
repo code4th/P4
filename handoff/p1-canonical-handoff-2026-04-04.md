@@ -11,7 +11,7 @@ Date: 2026-04-04
 補足:
 
 この canonical handoff は、外部コア実装の現状整理としては正しい。
-ただし、今後の main-thread 実装は「external-core-first UX」をそのまま完成形と見なさず、「OpenClaw 上の separate P1 agent interface を前面に置く」方向へ進めること。
+ただし、今後の main-thread 実装は「OpenClaw 上の別人格」を作ることではなく、`p1-core` を living runtime として前に出し、その backend として OpenClaw を利用する方向へ進めること。
 
 ## 0.5 目的優先の読み方
 
@@ -367,8 +367,9 @@ python3 -m p1_core.cli status
 python3 -m p1_core.cli approvals
 python3 -m p1_core.cli state
 python3 -m p1_core.cli ingest --model qwen3:4b-instruct --input-text "example observation"
-python3 -m p1_core.cli chat --new-session --model qwen3:4b-instruct --message "What do you think about the latest state?"
-python3 -m p1_core.cli chat --session-id session:... --message "continue that thread"
+python3 -m p1_core.cli chat --model qwen3:4b-instruct --message "What do you think about the latest state?"
+python3 -m p1_core.cli enqueue-message --content "What do you think about the latest state?"
+python3 -m p1_core.cli tick
 python3 -m p1_core.cli observe --text "A tool run failed during retrieval."
 python3 -m p1_core.cli action --kind note --payload "prepare a bounded follow-up action"
 python3 -m p1_core.cli rollback --target proposals --snapshot-id 2026-04-04-proposals
@@ -379,15 +380,35 @@ python3 -m p1_core.cli rollback --target policies --snapshot-id baseline-policy
 
 ```bash
 /Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent status
-/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent chat --new-session --message "hello P1"
-/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent observe --text "operator noticed a new pattern"
-/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent action --kind note --payload "review this anomaly"
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent report --kind daily
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent approvals
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 enqueue-message --content "hello P1"
+/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 tick
 python3 -m p1_core.bootstrap.install_openclaw_agent --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1 --source-agent main
 python3 -m p1_core.bootstrap.generate_openclaw_config_patch --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1
 python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1
 ```
 
 `openclaw.json` に入れるのは schema-compatible な最小 agent entry のみで、P1 固有の identity/transport 情報は workspace と `~/.openclaw/agents/p1/agent/p1-openclaw-entry.json` に残す。
+
+### 7.10 P1 autonomy runtime v1
+
+`p1-core` には新しく non-blocking autonomy runtime を入れ始めた。
+
+```bash
+python3 -m p1_core.cli enqueue-message --content "hello P1"
+python3 -m p1_core.cli tick
+python3 -m p1_core.cli show-autonomy-state
+python3 -m p1_core.cli queue-action --kind append_note --inputs '{"content":"autonomy note"}'
+```
+
+この runtime は:
+
+- `state/autonomy/` に継続 state を保持する
+- 常駐プロセスを占有せず、1 tick ごとに短く終わる
+- local-first で LLM を使う
+- OpenClaw-backed Plus を毎 tick 使う前提は置かない
+- low-risk queued action を自分で実行できる
 
 ## 8. 検証済み事項
 
@@ -397,15 +418,17 @@ python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/sa
 - bootstrap scaffolder による workspace 生成成功
 - example report 生成成功
 - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent status` 成功
-- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent observe` 成功
-- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent action` 成功
-- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent chat --new-session` 成功
+- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent report --kind daily` 成功
+- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent approvals` 成功
+- `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 enqueue-message` と `tick` が成功
 - `install_openclaw_agent.py` で `~/.openclaw/agents/p1/` 相当の slot scaffold を外部生成できることを確認
 - `generate_openclaw_config_patch.py` で `agent/openclaw-config-agent-entry.json` を生成できることを確認
 - `apply_openclaw_config_patch.py` で `openclaw.json` に `p1` を登録し、backup を残せることを確認
 - `openclaw agents list` で `p1` が configured agent として見えることを確認
 - `openclaw agent --agent p1 --local --message ... --json` は通るが、現状は OpenClaw embedded agent 実行であり `bin/p1-agent` 経由ではないことを確認
-- そのため direct OpenClaw turn 後も `state/conversation/transcript.jsonl` と `state/world/observations.jsonl` は更新されず、external-core front door への接続は残課題であることを確認
+- そのため direct OpenClaw turn 後も `state/conversation/transcript.jsonl` と `state/world/observations.jsonl` は更新されず、OpenClaw direct route を living P1 runtime へどう接続するかは残課題であることを確認
+- non-blocking autonomy runtime の unit tests が通ることを確認
+- autonomy inbox reply と low-risk action execution が local-first routing で通ることを確認
 - growth loop による knowledge / proposal / report / event 生成成功
 - knowledge state の `deferred` 遷移成功
 - proposal snapshot の履歴化と比較差分生成成功

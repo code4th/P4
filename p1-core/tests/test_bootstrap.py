@@ -30,6 +30,8 @@ class BootstrapTests(unittest.TestCase):
             manifest = json.loads((root / "agent" / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(config["promotion_mode"], "proposal_only")
             self.assertEqual(config["workspace_kind"], "openclaw-system-agent")
+            self.assertEqual(config["autonomy"]["mode"], "cooperative_tick")
+            self.assertTrue(config["autonomy"]["local_first"])
             self.assertEqual(manifest["entrypoint"]["wrapper"], "bin/p1-agent")
 
 

@@ -7,6 +7,13 @@ from pathlib import Path
 from typing import Any
 
 
+RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
+
+
+def compare_risk_levels(left: str, right: str) -> int:
+    return RISK_ORDER.get(left, 99) - RISK_ORDER.get(right, 99)
+
+
 @dataclass(slots=True)
 class GovernanceStore:
     root: Path

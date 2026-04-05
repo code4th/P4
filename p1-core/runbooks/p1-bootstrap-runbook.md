@@ -25,19 +25,22 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
    - `python3 -m p1_core.cli status`
    - `python3 -m p1_core.cli approvals`
    - `python3 -m p1_core.cli state`
+   - `python3 -m p1_core.cli enqueue-message --content "hello P1"`
+   - `python3 -m p1_core.cli tick`
+   - `python3 -m p1_core.cli show-autonomy-state`
+   - `python3 -m p1_core.cli queue-action --kind append_note --inputs '{"content":"autonomy note"}'`
    - `python3 -m p1_core.cli ingest --model qwen3:4b-instruct --input-text "example observation"`
    - `python3 -m p1_core.cli ingest --model qwen3:4b-instruct --background-model gemma4:e4b --input-text "example observation"`
    - `python3 -m p1_core.cli run-background-job --job-id bgjob:... --model gemma4:e4b`
-   - `python3 -m p1_core.cli chat --new-session --model qwen3:4b-instruct --message "What do you think about the latest state?"`
-   - `python3 -m p1_core.cli chat --session-id session:... --message "continue that thread"`
+   - `python3 -m p1_core.cli chat --model qwen3:4b-instruct --message "What do you think about the latest state?"`
    - `python3 -m p1_core.cli observe --text "A tool run failed during retrieval."`
    - `python3 -m p1_core.cli action --kind note --payload "prepare a bounded follow-up action"`
 8. Use the OpenClaw-side P1 wrapper when you want to treat P1 as a separate individual.
    - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent status`
-   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent chat --new-session --message "hello P1"`
-   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent chat --session-id session:... --message "continue"`
-   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent observe --text "operator noticed a new pattern"`
-   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent action --kind note --payload "review this anomaly"`
+   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent report --kind daily`
+   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent approvals`
+   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 enqueue-message --content "hello P1"`
+   - `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1 tick`
 9. Run the operator-surface integration check when changing lifecycle code.
    - `python3 -m unittest tests.test_end_to_end -v`
    - This now covers policy rollback and proposal rollback visibility through the operator CLI.
@@ -74,6 +77,13 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
    - `python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1`
    - rollback with `python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --agent-name p1 --rollback`
    - both commands create timestamped backups by default
+
+## Autonomy Runtime Notes
+
+- P1 should not start by permanently occupying a process
+- prefer `tick`-based advancement with persisted `next_wake_at`
+- prefer local LLMs before any OpenClaw-backed Plus path
+- use OpenClaw-backed Plus only for higher-value cases once an adapter is wired
 
 ## Verified outputs after growth loop
 

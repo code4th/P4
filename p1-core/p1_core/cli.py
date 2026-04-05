@@ -5,11 +5,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+from p1_core.autonomy import AutonomyRuntime
+from p1_core.core.action_runtime import ActionSpec
 from p1_core.core.chat_agent import ChatAgent
 from p1_core.core.background_job_store import BackgroundJobStore
 from p1_core.core.conversation_store import ConversationStore
 from p1_core.core.governance_store import GovernanceStore
 from p1_core.core.knowledge_store import KnowledgeStore
+from p1_core.core.llm_runtime import DisabledOpenClawLLMBackend
 from p1_core.core.policy_store import PolicyStore
 from p1_core.core.proposal_store import ProposalStore
 from p1_core.core.world_store import WorldStore
@@ -20,6 +23,29 @@ from p1_core.worker.service import WorkerService
 
 def _read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _workspace_config(root: Path) -> dict[str, Any]:
+    config_path = root / "config.json"
+    defaults = {
+        "worker_model": "qwen3:4b-instruct",
+        "background_worker_model": "gemma4:e4b",
+        "autonomy": {
+            "local_first": True,
+            "per_tick_openclaw_cap": 1,
+            "openclaw_3h_soft_cap": 20,
+            "openclaw_daily_soft_cap": 40,
+            "default_wake_seconds": 300,
+            "idle_wake_seconds": 900,
+            "lease_seconds": 120,
+        },
+    }
+    if not config_path.exists():
+        return defaults
+    loaded = _read_json(config_path)
+    merged = {**defaults, **loaded}
+    merged["autonomy"] = {**defaults["autonomy"], **loaded.get("autonomy", {})}
+    return merged
 
 
 def _latest_daily_path(root: Path, kind: str, date: str | None = None) -> Path:
@@ -146,6 +172,42 @@ def operator_chat(root: Path, *, message: str, model: str) -> dict[str, Any]:
     return agent.reply(message)
 
 
+def _autonomy_runtime(root: Path) -> AutonomyRuntime:
+    config = _workspace_config(root)
+    local_model = str(config.get("worker_model", "qwen3:4b-instruct"))
+    return AutonomyRuntime(
+        root=root,
+        local_llm_backend=OllamaClient(model=local_model),
+        openclaw_llm_backend=None,
+    )
+
+
+def operator_enqueue_message(root: Path, *, content: str, source: str = "user") -> dict[str, Any]:
+    return _autonomy_runtime(root).enqueue_message(content, source=source)
+
+
+def operator_tick(root: Path) -> dict[str, Any]:
+    return _autonomy_runtime(root).tick_once()
+
+
+def operator_show_autonomy_state(root: Path) -> dict[str, Any]:
+    return _autonomy_runtime(root).show_state()
+
+
+def operator_queue_action(
+    root: Path,
+    *,
+    kind: str,
+    inputs: dict[str, Any],
+    risk_level: str = "low",
+    backend: str = "local",
+    goal: str | None = None,
+) -> dict[str, Any]:
+    runtime = _autonomy_runtime(root)
+    spec = ActionSpec(kind=kind, inputs=inputs, risk_level=risk_level, backend=backend, goal=goal)
+    return runtime.action_store.enqueue(spec)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified operator CLI for the P1 external core")
     parser.add_argument("--root", default="/Users/satojunichi/.openclaw/workspace/systems/p1")
@@ -188,6 +250,20 @@ def parse_args() -> argparse.Namespace:
     rollback_parser = subparsers.add_parser("rollback", help="Rollback proposal or policy state")
     rollback_parser.add_argument("--target", choices=["proposals", "policies"], required=True)
     rollback_parser.add_argument("--snapshot-id", required=True)
+
+    enqueue_parser = subparsers.add_parser("enqueue-message", help="Queue a message for the autonomy runtime")
+    enqueue_parser.add_argument("--content", required=True)
+    enqueue_parser.add_argument("--source", default="user")
+
+    subparsers.add_parser("tick", help="Run one non-blocking autonomy tick")
+    subparsers.add_parser("show-autonomy-state", help="Inspect autonomy runtime state")
+
+    queue_action_parser = subparsers.add_parser("queue-action", help="Queue an autonomy action")
+    queue_action_parser.add_argument("--kind", required=True)
+    queue_action_parser.add_argument("--inputs", required=True, help="JSON object for the action inputs")
+    queue_action_parser.add_argument("--risk-level", default="low")
+    queue_action_parser.add_argument("--backend", default="local")
+    queue_action_parser.add_argument("--goal")
     return parser.parse_args()
 
 
@@ -213,6 +289,21 @@ def main() -> None:
         payload = operator_action(root, kind=args.kind, payload=args.payload, source=args.source)
     elif args.subcommand == "chat":
         payload = operator_chat(root, message=args.message, model=args.model)
+    elif args.subcommand == "enqueue-message":
+        payload = operator_enqueue_message(root, content=args.content, source=args.source)
+    elif args.subcommand == "tick":
+        payload = operator_tick(root)
+    elif args.subcommand == "show-autonomy-state":
+        payload = operator_show_autonomy_state(root)
+    elif args.subcommand == "queue-action":
+        payload = operator_queue_action(
+            root,
+            kind=args.kind,
+            inputs=json.loads(args.inputs),
+            risk_level=args.risk_level,
+            backend=args.backend,
+            goal=args.goal,
+        )
     else:
         payload = operator_rollback(root, target=args.target, snapshot_id=args.snapshot_id)
 

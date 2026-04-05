@@ -29,9 +29,10 @@ The intended outcome is that:
 
 The intended day-to-day experience is:
 
-- P1 is visible from the OpenClaw side as its own agent interface
-- the manager talks to P1 through that interface, not primarily through maintenance scripts
-- P1 uses OpenClaw as the practical runtime for conversation, tool use, and operations
+- P1 can be talked to directly, but it does not exist only when spoken to
+- P1 preserves continuity through its own state even when the manager is silent
+- OpenClaw may still expose a P1-facing interface, but OpenClaw is only a temporary execution substrate
+- P1 uses OpenClaw selectively for conversation, tool use, and operations when that is the practical path
 - P1's long-horizon memory, governance, audit, and rollback remain outside OpenClaw
 
 ### 0.3 Layer Roles
@@ -92,6 +93,8 @@ These are fixed and should not drift:
 - the core logic stays outside OpenClaw
 - OpenClaw is control plane, not identity
 - P1 is an independent individual that uses OpenClaw
+- P1 should not begin by permanently occupying a process
+- LLM usage should begin conservatively and prefer local models whenever practical
 - local LLMs are auxiliary cognition
 - cloud LLMs are for final/high-stakes judgment
 - the first self-modified target is operational rules, not model weights
@@ -175,7 +178,7 @@ Therefore:
 Current interpretation:
 
 - `p1-core/` is already a viable governance and memory substrate
-- the next main-thread implementation focus should be the OpenClaw-facing P1 agent interface
+- the next implementation focus is the living P1 runtime that sits on top of that substrate
 - `bin/p1` is only a temporary operator wrapper, not the final UX target
 
 ### 5.2 Worker
@@ -369,6 +372,29 @@ Outputs:
 - `state/reports/daily/*-daily.json`
 - `state/health.json`
 
+### 5.6 Autonomy Runtime v1
+
+The newly added direction is a first non-blocking autonomy runtime inside `p1-core`.
+
+It currently means:
+
+- P1 keeps autonomy state under `state/autonomy/`
+- P1 can receive queued messages through an inbox and answer them during a short `tick`
+- P1 can queue and execute minimal low-risk actions through its own action framework
+- P1 does not start as an always-on resource-owning daemon
+- P1 decides its own `next_wake_at`, but an external scheduler is still expected to trigger `tick_once`
+- LLM routing is local-first and budget-aware
+- OpenClaw-backed Plus use must remain conservative and should not be the default path for every tick
+
+New runtime outputs:
+
+- `state/autonomy/runtime-state.json`
+- `state/autonomy/ticks.jsonl`
+- `state/autonomy/inbox/`
+- `state/actions/queue/`
+- `state/actions/history/`
+- `state/budgets/llm-usage.json`
+
 ## 6. Current State Logic
 
 Knowledge states:
@@ -402,11 +428,13 @@ For this project, core completion means all of the following:
 - experiment outcomes feed back into later updates
 - the agent can converse through the external core
 - the agent can observe and request bounded action toward the external world
+- the agent can maintain a non-blocking autonomy state and advance itself without waiting for explicit manager instructions
 
 Therefore, the current state is:
 
 - minimal external core skeleton: complete
 - bounded autonomous self-improvement core: complete as a minimum operational loop
+- living autonomy runtime: started but not complete
 
 ## 8. Practical Operations Today
 
@@ -439,21 +467,29 @@ Current operational entrypoints:
 7. Inspect unified external-core state
    - `python3 -m p1_core.cli state`
 
-8. Talk with P1
-   - `python3 -m p1_core.cli chat --new-session --model qwen3:4b-instruct --message "What do you think about the latest state?"`
-   - or `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent chat --new-session --message "What do you think about the latest state?"`
+8. Advance one autonomy tick without keeping a daemon alive
+   - `python3 -m p1_core.cli tick`
+   - `python3 -m p1_core.cli show-autonomy-state`
 
-9. Record a world observation
+9. Queue a message for the living P1 runtime
+   - `python3 -m p1_core.cli enqueue-message --content "What do you think about the latest state?"`
+
+10. Talk with P1
+   - `python3 -m p1_core.cli chat --model qwen3:4b-instruct --message "What do you think about the latest state?"`
+   - or `python3 -m p1_core.cli enqueue-message --content "What do you think about the latest state?"`
+   - then `python3 -m p1_core.cli tick`
+
+11. Record a world observation
    - `python3 -m p1_core.cli observe --text "A tool run failed during retrieval."`
-   - or `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent observe --text "A tool run failed during retrieval."`
 
-10. Queue a bounded world action request
+12. Queue a bounded world action request
    - `python3 -m p1_core.cli action --kind note --payload "prepare a bounded follow-up action"`
-   - or `/Users/satojunichi/.openclaw/workspace/systems/p1/bin/p1-agent action --kind note --payload "prepare a bounded follow-up action"`
-11. Scaffold OpenClaw-facing registration without mutating global config automatically
+13. Queue a low-risk autonomy action
+   - `python3 -m p1_core.cli queue-action --kind append_note --inputs '{"content":"autonomy note"}'`
+14. Scaffold OpenClaw-facing registration without mutating global config automatically
    - `python3 -m p1_core.bootstrap.install_openclaw_agent --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1 --source-agent main`
    - `python3 -m p1_core.bootstrap.generate_openclaw_config_patch --openclaw-home /Users/satojunichi/.openclaw --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1`
-12. Apply or roll back OpenClaw registration through the external bootstrap layer
+15. Apply or roll back OpenClaw registration through the external bootstrap layer
    - `python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --workspace-root /Users/satojunichi/.openclaw/workspace/systems/p1 --agent-name p1`
    - `python3 -m p1_core.bootstrap.apply_openclaw_config_patch --config-path /Users/satojunichi/.openclaw/openclaw.json --agent-name p1 --rollback`
    - timestamped backups are created before mutation
@@ -465,8 +501,9 @@ Current limitation:
 - P1 can scaffold `~/.openclaw/agents/p1/` and apply or roll back `openclaw.json` registration through explicit external scripts
 - registration is still an operator action, not an internal OpenClaw self-spawn
 - `openclaw agent --agent p1` currently runs as an OpenClaw embedded agent against the P1 workspace; it does not yet route through `bin/p1-agent`, so direct OpenClaw turns do not automatically append to `state/conversation/` or `state/world/`
-- until a deeper adapter exists, the verified external-core-backed entrypoint is `bin/p1-agent` or `keeper_adapter.cli`
+- until a deeper adapter exists, the verified external-core-backed entrypoint is `bin/p1` for autonomy and `bin/p1-agent` for status/report/approval transport
 - OpenClaw still remains a thin control plane and should not absorb P1 judgment logic
+- the new autonomy runtime is still cooperative rather than always-on, and OpenClaw-backed Plus use is intentionally conservative and not yet wired as the default deliberation lane
 
 ## 9. Rollback Principles
 
@@ -515,10 +552,18 @@ Verified in implementation:
 - world observations and queued action requests are persisted under `state/world/`
 - `keeper_adapter` reads `glance / daily / approvals` from generated outputs
 - `openclaw.json` registration for `p1` can now be applied and rolled back with backup files through external bootstrap scripts
+- a non-blocking autonomy runtime now persists `state/autonomy/`, `state/actions/`, and `state/budgets/`
+- autonomy can process queued inbox messages and low-risk queued actions without a permanently running daemon
+- local-first LLM routing is now enforced for that autonomy runtime
 
 ## 11. Remaining Work
 
-The next meaningful work is no longer basic skeleton building. It is now incremental quality work rather than a missing core subsystem.
+The next meaningful work is now:
+
+- extending the autonomy runtime beyond inbox reply and low-risk local actions
+- wiring OpenClaw as a true backend adapter rather than only a separate surface
+- teaching P1 to promote capability gaps into self-extension proposals
+- keeping Plus usage conservative while still making OpenClaw-backed deliberation available for high-value cases
 
 ## 12. Supporting Documents
 
