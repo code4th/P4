@@ -96,6 +96,7 @@ RUNBOOK_TEMPLATE = """# P1 Runbook
 9. Write all reports under `state/reports/`.
 10. Treat `state/proposals/` as approval-gated output.
 11. Use `agent/manifest.json` and `bin/p1-agent` when wiring P1 into an OpenClaw-visible agent slot.
+12. Review `state/capabilities/` for missing-hand/foot gaps and first-pass self-extension proposals.
 
 Rollback:
 

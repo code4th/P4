@@ -14,6 +14,7 @@ from p1_core.core.capability_store import CapabilityStore
 from p1_core.core.conversation_store import ConversationStore
 from p1_core.core.governance_store import GovernanceStore
 from p1_core.core.llm_runtime import LLMRouter, LLMUsageStore, TextLLMBackend
+from p1_core.core.policy_engine import PolicyEngine
 from p1_core.core.world_store import WorldStore
 
 
@@ -77,6 +78,17 @@ class InboxStore:
         source.unlink()
         return payload
 
+    def defer(self, message_id: str, *, reason: str) -> dict[str, Any]:
+        source = self.queue_dir / f"{message_id.replace(':', '-')}.json"
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        payload["status"] = "deferred"
+        payload["deferred_at"] = _iso()
+        payload["defer_reason"] = reason
+        target = self.processed_dir / source.name
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        source.unlink()
+        return payload
+
     def counts(self) -> dict[str, int]:
         return {
             "queued": len(list(self.queue_dir.glob("*.json"))),
@@ -99,6 +111,7 @@ class AutonomyRuntime:
     inbox: InboxStore = field(init=False)
     usage_store: LLMUsageStore = field(init=False)
     executor: ActionExecutor = field(init=False)
+    policy_engine: PolicyEngine = field(init=False)
 
     def __post_init__(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -110,6 +123,7 @@ class AutonomyRuntime:
         self.capability_store = CapabilityStore(self.root / "state" / "capabilities")
         self.inbox = InboxStore(self.state_dir / "inbox")
         self.usage_store = LLMUsageStore(self.root / "state" / "budgets")
+        self.policy_engine = PolicyEngine()
         self.executor = ActionExecutor(
             root=self.root,
             background_job_store=self.background_jobs,
@@ -172,6 +186,8 @@ class AutonomyRuntime:
             "backgroundJobCounts": self.background_jobs.counts(),
             "capabilityGapCounts": self.capability_store.counts(),
             "recentCapabilityGaps": self.capability_store.list_gaps(limit=5),
+            "capabilityProposalCounts": self.capability_store.proposal_counts(),
+            "recentCapabilityProposals": self.capability_store.list_proposals(limit=5),
             "llmUsage": self.usage_store.counts(),
         }
 
@@ -245,6 +261,7 @@ class AutonomyRuntime:
                 severity="medium",
                 metadata={"message_id": message["message_id"]},
             )
+            self.inbox.defer(message["message_id"], reason=str(exc))
             next_wake = moment + timedelta(seconds=int(policy.get("default_wake_seconds", 300)))
             self.save_state(
                 {
@@ -390,6 +407,25 @@ class AutonomyRuntime:
                 "next_wake_at": _iso(next_wake),
             }
 
+        pending_gap = self._next_unproposed_gap()
+        if pending_gap:
+            proposal = self._proposal_from_gap(pending_gap)
+            next_wake = moment + timedelta(seconds=300)
+            self.save_state(
+                {
+                    **state,
+                    "current_focus": "capability_extension_planning",
+                    "last_tick_at": _iso(moment),
+                    "next_wake_at": _iso(next_wake),
+                    "last_tick_summary": f"capability proposal recorded for {pending_gap['gap_id']}",
+                }
+            )
+            return {
+                "status": "capability_proposal_recorded",
+                "proposal": proposal,
+                "next_wake_at": _iso(next_wake),
+            }
+
         idle_seconds = int(state.get("budget_policy", {}).get("idle_wake_seconds", 900))
         next_wake = moment + timedelta(seconds=idle_seconds)
         self.save_state(
@@ -402,6 +438,32 @@ class AutonomyRuntime:
             }
         )
         return {"status": "idle", "summary": "no inbox or actions pending", "next_wake_at": _iso(next_wake)}
+
+    def _next_unproposed_gap(self) -> dict[str, Any] | None:
+        for gap in reversed(self.capability_store.list_gaps(limit=100)):
+            if not self.capability_store.has_proposal_for_gap(str(gap.get("gap_id"))):
+                return gap
+        return None
+
+    def _proposal_from_gap(self, gap: dict[str, Any]) -> dict[str, Any]:
+        summary = (
+            f"Implement missing capability: {gap.get('title')} "
+            f"from {gap.get('source')} ({gap.get('severity')} severity)"
+        )
+        policy = self.policy_engine.classify(summary)
+        return self.capability_store.record_proposal(
+            gap_id=str(gap["gap_id"]),
+            summary=policy.summary,
+            proposal_type="capability_extension",
+            risk_level=policy.risk_level,
+            requires_approval=policy.requires_approval,
+            detail=str(gap.get("detail", "")),
+            metadata={
+                "source": gap.get("source"),
+                "severity": gap.get("severity"),
+                "gap_metadata": gap.get("metadata", {}),
+            },
+        )
 
     def _should_sleep(self, state: dict[str, Any], moment: datetime, *, has_inbox: bool) -> bool:
         if has_inbox:

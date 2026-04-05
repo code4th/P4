@@ -119,6 +119,7 @@ class AutonomyRuntimeTests(unittest.TestCase):
             self.assertEqual(result["status"], "conversation_deferred")
             self.assertEqual(openclaw.calls, 0)
             self.assertEqual(runtime.capability_store.counts()["total"], 1)
+            self.assertEqual(runtime.inbox.counts()["queued"], 0)
 
     def test_run_command_is_not_treated_as_low_risk(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -154,6 +155,7 @@ class AutonomyRuntimeTests(unittest.TestCase):
             self.assertEqual(payload["inboxCounts"]["queued"], 0)
             self.assertEqual(payload["actionCounts"]["queued"], 0)
             self.assertIn("capabilityGapCounts", payload)
+            self.assertIn("capabilityProposalCounts", payload)
             self.assertIn("llmUsage", payload)
 
     def test_openclaw_action_without_backend_records_capability_gap(self) -> None:
@@ -169,6 +171,24 @@ class AutonomyRuntimeTests(unittest.TestCase):
             self.assertEqual(result["status"], "action_executed")
             self.assertEqual(runtime.action_store.counts()["failed"], 1)
             self.assertEqual(runtime.capability_store.counts()["total"], 1)
+
+    def test_gap_is_promoted_to_capability_proposal_on_following_tick(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+            runtime.capability_store.record_gap(
+                title="missing read backend",
+                detail="openclaw action backend is not configured",
+                source="autonomy.action",
+                severity="high",
+            )
+
+            result = runtime.tick_once()
+
+            self.assertEqual(result["status"], "capability_proposal_recorded")
+            self.assertEqual(runtime.capability_store.proposal_counts()["total"], 1)
+            proposal = runtime.capability_store.list_proposals(limit=1)[0]
+            self.assertEqual(proposal["proposal_type"], "capability_extension")
 
 
 if __name__ == "__main__":

@@ -91,6 +91,7 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 - use OpenClaw-backed Plus only for higher-value cases once an adapter is wired
 - keep `openclaw_backend` disabled by default and opt in explicitly
 - inspect `state/capabilities/gaps.jsonl` or `show-capability-gaps` when P1 hits missing hand/foot capability boundaries
+- inspect `state/capabilities/proposals.jsonl` as the first self-extension staging area
 
 ## Verified outputs after growth loop
 

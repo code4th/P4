@@ -67,3 +67,54 @@ class CapabilityStore:
             "medium": by_severity.get("medium", 0),
             "high": by_severity.get("high", 0),
         }
+
+    def record_proposal(
+        self,
+        *,
+        gap_id: str,
+        summary: str,
+        proposal_type: str,
+        risk_level: str,
+        requires_approval: bool,
+        detail: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "proposal_id": f"capprop:{uuid.uuid4()}",
+            "gap_id": gap_id,
+            "proposal_type": proposal_type,
+            "summary": summary,
+            "risk_level": risk_level,
+            "requires_approval": requires_approval,
+            "detail": detail,
+            "metadata": metadata or {},
+            "recorded_at": _now(),
+        }
+        with self.proposals_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return payload
+
+    @property
+    def proposals_path(self) -> Path:
+        return self.root / "proposals.jsonl"
+
+    def list_proposals(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        if not self.proposals_path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        for line in self.proposals_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            rows.append(json.loads(line))
+        return rows[-limit:]
+
+    def proposal_counts(self) -> dict[str, int]:
+        rows = self.list_proposals(limit=100000)
+        return {
+            "total": len(rows),
+            "approval_required": sum(1 for row in rows if row.get("requires_approval")),
+            "autonomous_candidate": sum(1 for row in rows if not row.get("requires_approval")),
+        }
+
+    def has_proposal_for_gap(self, gap_id: str) -> bool:
+        return any(row.get("gap_id") == gap_id for row in self.list_proposals(limit=100000))

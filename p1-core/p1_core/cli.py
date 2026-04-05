@@ -228,6 +228,8 @@ def operator_show_capability_gaps(root: Path) -> dict[str, Any]:
     return {
         "counts": runtime.capability_store.counts(),
         "gaps": runtime.capability_store.list_gaps(limit=20),
+        "proposalCounts": runtime.capability_store.proposal_counts(),
+        "proposals": runtime.capability_store.list_proposals(limit=20),
     }
 
 

@@ -189,6 +189,29 @@ class OperatorCliTests(unittest.TestCase):
                 payload = operator_show_capability_gaps(root)
             self.assertEqual(payload["counts"]["total"], 1)
             self.assertEqual(payload["gaps"][0]["source"], "autonomy.message")
+            self.assertEqual(payload["proposalCounts"]["total"], 0)
+
+    def test_capability_gap_turns_into_proposal_on_next_tick(self) -> None:
+        class FailingClient:
+            def __init__(self, model: str, base_url: str = "http://127.0.0.1:11434", timeout_seconds: float = 60.0) -> None:
+                self.model = model
+
+            def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+                raise RuntimeError("local backend unavailable")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("p1_core.cli.OllamaClient", FailingClient):
+                operator_enqueue_message(root, content="hello from inbox")
+                operator_tick(root)
+                runtime_state_path = root / "state" / "autonomy" / "runtime-state.json"
+                runtime_state = json.loads(runtime_state_path.read_text(encoding="utf-8"))
+                runtime_state["next_wake_at"] = None
+                runtime_state_path.write_text(json.dumps(runtime_state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                operator_tick(root)
+                payload = operator_show_capability_gaps(root)
+            self.assertEqual(payload["proposalCounts"]["total"], 1)
+            self.assertEqual(payload["proposals"][0]["proposal_type"], "capability_extension")
 
     def test_operator_ingest_can_queue_background_analysis(self) -> None:
         class FakeClient:
