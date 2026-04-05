@@ -42,6 +42,7 @@ class InboxStore:
     def __post_init__(self) -> None:
         self.queue_dir.mkdir(parents=True, exist_ok=True)
         self.processed_dir.mkdir(parents=True, exist_ok=True)
+        self.deferred_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def queue_dir(self) -> Path:
@@ -50,6 +51,10 @@ class InboxStore:
     @property
     def processed_dir(self) -> Path:
         return self.root / "processed"
+
+    @property
+    def deferred_dir(self) -> Path:
+        return self.root / "deferred"
 
     def enqueue(self, content: str, *, source: str = "user") -> dict[str, Any]:
         payload = {
@@ -87,15 +92,37 @@ class InboxStore:
         payload["status"] = "deferred"
         payload["deferred_at"] = _iso()
         payload["defer_reason"] = reason
-        target = self.processed_dir / source.name
+        payload["retry_after_at"] = _iso(_now() + timedelta(seconds=300))
+        target = self.deferred_dir / source.name
         target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         source.unlink()
         return payload
+
+    def requeue_due_deferred(self, *, now: datetime) -> list[dict[str, Any]]:
+        requeued: list[dict[str, Any]] = []
+        for path in sorted(self.deferred_dir.glob("*.json")):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            retry_after_at = payload.get("retry_after_at")
+            if retry_after_at:
+                try:
+                    retry_at = datetime.fromisoformat(retry_after_at)
+                except ValueError:
+                    retry_at = now
+                if retry_at > now:
+                    continue
+            payload["status"] = "queued"
+            payload["requeued_at"] = _iso(now)
+            target = self.queue_dir / path.name
+            target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            path.unlink()
+            requeued.append(payload)
+        return requeued
 
     def counts(self) -> dict[str, int]:
         return {
             "queued": len(list(self.queue_dir.glob("*.json"))),
             "processed": len(list(self.processed_dir.glob("*.json"))),
+            "deferred": len(list(self.deferred_dir.glob("*.json"))),
         }
 
 
@@ -218,8 +245,11 @@ class AutonomyRuntime:
             return result
 
         try:
+            self.inbox.requeue_due_deferred(now=moment)
+            self.action_store.requeue_due_deferred(now_iso=_iso(moment))
             queued_message = self.inbox.next_message()
-            if self._should_sleep(state, moment, has_inbox=queued_message is not None):
+            has_actions = self.action_store.counts().get("queued", 0) > 0
+            if self._should_sleep(state, moment, has_inbox=queued_message is not None, has_actions=has_actions):
                 result = {
                     "status": "sleeping",
                     "summary": "no pending work and next wake has not arrived",
@@ -366,6 +396,8 @@ class AutonomyRuntime:
                 )
                 return {"status": "rejected", "action": rejected, "next_wake_at": _iso(next_wake)}
             if decision == "defer":
+                deferred = self.action_store.mark_deferred(spec.action_id, reason, retry_after_at=_iso(moment + timedelta(seconds=300)))
+                self._sync_capability_execution(spec.action_id, deferred)
                 next_wake = moment + timedelta(seconds=300)
                 self.save_state(
                     {
@@ -376,7 +408,7 @@ class AutonomyRuntime:
                         "last_tick_summary": reason,
                     }
                 )
-                return {"status": "deferred", "summary": reason, "next_wake_at": _iso(next_wake)}
+                return {"status": "deferred", "summary": reason, "action": deferred, "next_wake_at": _iso(next_wake)}
 
             result = self.executor.execute(spec)
             if result.status == "completed":
@@ -663,9 +695,20 @@ class AutonomyRuntime:
                     "rollback_hint": result.get("rollback_hint"),
                 },
             )
+        elif action_record.get("status") == "deferred":
+            self.capability_store.update_execution(
+                str(execution["execution_id"]),
+                status="deferred",
+                detail=f"self-extension task deferred: {action_record.get('defer_reason', 'deferred by policy')}",
+                metadata={
+                    "action_status": action_record.get("status"),
+                    "retry_after_at": action_record.get("retry_after_at"),
+                    "defer_reason": action_record.get("defer_reason"),
+                },
+            )
 
-    def _should_sleep(self, state: dict[str, Any], moment: datetime, *, has_inbox: bool) -> bool:
-        if has_inbox:
+    def _should_sleep(self, state: dict[str, Any], moment: datetime, *, has_inbox: bool, has_actions: bool = False) -> bool:
+        if has_inbox or has_actions:
             return False
         next_wake_at = state.get("next_wake_at")
         if not next_wake_at:

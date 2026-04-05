@@ -81,6 +81,7 @@ class ActionStore:
         self.history_dir.mkdir(parents=True, exist_ok=True)
         self.approval_dir.mkdir(parents=True, exist_ok=True)
         self.failed_dir.mkdir(parents=True, exist_ok=True)
+        self.deferred_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def queue_dir(self) -> Path:
@@ -97,6 +98,10 @@ class ActionStore:
     @property
     def failed_dir(self) -> Path:
         return self.root / "failed"
+
+    @property
+    def deferred_dir(self) -> Path:
+        return self.root / "deferred"
 
     def enqueue(self, spec: ActionSpec) -> dict[str, Any]:
         path = self.queue_dir / f"{spec.action_id.replace(':', '-')}.json"
@@ -125,11 +130,34 @@ class ActionStore:
         payload["error"] = error
         return self._move_payload(self.queue_dir, self.failed_dir, action_id, payload)
 
+    def mark_deferred(self, action_id: str, reason: str, *, retry_after_at: str) -> dict[str, Any]:
+        payload = self._read(self.queue_dir, action_id)
+        payload["status"] = "deferred"
+        payload["defer_reason"] = reason
+        payload["retry_after_at"] = retry_after_at
+        return self._move_payload(self.queue_dir, self.deferred_dir, action_id, payload)
+
+    def requeue_due_deferred(self, *, now_iso: str) -> list[dict[str, Any]]:
+        requeued: list[dict[str, Any]] = []
+        for path in sorted(self.deferred_dir.glob("*.json")):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            retry_after_at = str(payload.get("retry_after_at", ""))
+            if retry_after_at and retry_after_at > now_iso:
+                continue
+            payload["status"] = "queued"
+            payload["requeued_at"] = now_iso
+            target = self.queue_dir / path.name
+            target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            path.unlink()
+            requeued.append(payload)
+        return requeued
+
     def counts(self) -> dict[str, int]:
         return {
             "queued": len(list(self.queue_dir.glob("*.json"))),
             "completed": len(list(self.history_dir.glob("*.json"))),
             "approval_required": len(list(self.approval_dir.glob("*.json"))),
+            "deferred": len(list(self.deferred_dir.glob("*.json"))),
             "failed": len(list(self.failed_dir.glob("*.json"))),
         }
 

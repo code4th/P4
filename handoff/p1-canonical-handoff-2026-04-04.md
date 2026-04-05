@@ -416,6 +416,7 @@ python3 -m p1_core.cli queue-action --kind append_note --inputs '{"content":"aut
 - capability proposal は `state/capabilities/reviews.jsonl` に first-pass governance review を持ち、approval-required なものは `state/capabilities/cloud_evaluation/requests/` に回る
 - approved capability proposal は proposal 単位で重複実行を避けつつ `state/capabilities/executions.jsonl` と action queue を通じた bounded task 化に留める
 - bounded task の完了/失敗と rollback hint は `state/capabilities/executions.jsonl` に還流する
+- deferred inbox と deferred action は専用 queue に移し、retry 時刻を過ぎたら再投入する
 
 ## 8. 検証済み事項
 

@@ -511,6 +511,7 @@ Current limitation:
 - capability proposals now receive first-pass evaluation/governance reviews and can queue cloud approval requests under `state/capabilities/cloud_evaluation/requests/`
 - approved capability proposals are first turned into bounded self-extension tasks, not direct unrestricted self-rewrites
 - capability execution is deduplicated per proposal and reconciled after the queued task completes or fails, with rollback hints retained in `state/capabilities/executions.jsonl`
+- deferred inbox items and deferred actions are now retried through explicit deferred queues instead of being silently dropped or permanently blocking the head of the queue
 - the new `openclaw_backend` config block is an explicit opt-in adapter contract, not a signal to move default cognition away from local-first routing
 
 ## 9. Rollback Principles

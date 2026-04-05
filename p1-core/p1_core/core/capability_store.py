@@ -14,14 +14,25 @@ def _now() -> str:
 
 
 def _gap_key(*, title: str, detail: str, source: str, metadata: dict[str, Any] | None = None) -> str:
+    stable_metadata = _stable_gap_metadata(metadata or {})
     payload = {
         "title": title.strip(),
         "detail": detail.strip(),
         "source": source.strip(),
-        "metadata": metadata or {},
+        "metadata": stable_metadata,
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return f"capgapkey:{sha256(encoded.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _stable_gap_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    dropped_keys = {"message_id", "action_id", "request_id", "execution_id", "review_id", "proposal_id"}
+    stable: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if key in dropped_keys or key.endswith("_id") or key.endswith("_at"):
+            continue
+        stable[key] = value
+    return stable
 
 
 @dataclass(slots=True)
