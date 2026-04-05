@@ -89,10 +89,12 @@ class InboxStore:
     def defer(self, message_id: str, *, reason: str) -> dict[str, Any]:
         source = self.queue_dir / f"{message_id.replace(':', '-')}.json"
         payload = json.loads(source.read_text(encoding="utf-8"))
+        retries = int(payload.get("retry_count", 0)) + 1
         payload["status"] = "deferred"
         payload["deferred_at"] = _iso()
         payload["defer_reason"] = reason
         payload["retry_after_at"] = _iso(_now() + timedelta(seconds=300))
+        payload["retry_count"] = retries
         target = self.deferred_dir / source.name
         target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         source.unlink()
@@ -110,6 +112,14 @@ class InboxStore:
                     retry_at = now
                 if retry_at > now:
                     continue
+            if int(payload.get("retry_count", 0)) >= int(payload.get("max_retries", 3)):
+                payload["status"] = "processed"
+                payload["processed_at"] = _iso(now)
+                payload["terminal_reason"] = payload.get("defer_reason", "retry limit reached")
+                target = self.processed_dir / path.name
+                target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                path.unlink()
+                continue
             payload["status"] = "queued"
             payload["requeued_at"] = _iso(now)
             target = self.queue_dir / path.name
@@ -642,19 +652,23 @@ class AutonomyRuntime:
         gap_id = str(review.get("gap_id"))
         action = self.action_store.enqueue(
             ActionSpec(
-                kind="append_note",
+                kind="write_capability_task",
                 inputs={
-                    "content": (
-                        f"[self-extension task]\n"
-                        f"proposal_id: {proposal.get('proposal_id')}\n"
-                        f"gap_id: {gap_id}\n"
-                        f"summary: {summary}\n"
-                        f"detail: {proposal.get('detail', '')}\n"
-                    )
+                    "proposal_id": proposal.get("proposal_id"),
+                    "gap_id": gap_id,
+                    "summary": summary,
+                    "detail": proposal.get("detail", ""),
+                    "implementation_scope": "bounded_capability_task",
+                    "target_files": [],
+                    "acceptance_checks": [
+                        "task artifact exists under state/capabilities/tasks/",
+                        "rollback hint is recorded",
+                        "proposal remains auditable and bounded",
+                    ],
                 },
                 risk_level="low",
                 backend="local",
-                goal="materialize approved capability extension as an audited task",
+                goal="materialize approved capability extension as an audited bounded implementation task",
             )
         )
         return self.capability_store.record_execution(
@@ -662,8 +676,8 @@ class AutonomyRuntime:
             proposal_id=str(proposal.get("proposal_id")),
             action_id=str(action["action_id"]),
             status="queued_action",
-            detail="queued bounded self-extension task",
-            metadata={"action_kind": "append_note", "gap_id": gap_id},
+            detail="queued bounded self-extension implementation task",
+            metadata={"action_kind": "write_capability_task", "gap_id": gap_id},
         )
 
     def _sync_capability_execution(self, action_id: str, action_record: dict[str, Any]) -> None:

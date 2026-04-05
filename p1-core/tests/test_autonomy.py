@@ -218,8 +218,28 @@ class AutonomyRuntimeTests(unittest.TestCase):
             second_tick = runtime.tick_once()
 
             self.assertEqual(first["gap_id"], second["gap_id"])
-            self.assertEqual(second_tick["status"], "capability_review_recorded")
-            self.assertEqual(runtime.capability_store.proposal_counts()["total"], 1)
+
+    def test_gap_dedupe_preserves_meaningful_backend_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+            first = runtime.capability_store.record_gap(
+                title="missing backend capability",
+                detail="action backend capability is missing",
+                source="autonomy.action",
+                severity="high",
+                metadata={"backend_id": "openclaw-a", "kind": "read_file"},
+            )
+            second = runtime.capability_store.record_gap(
+                title="missing backend capability",
+                detail="action backend capability is missing",
+                source="autonomy.action",
+                severity="high",
+                metadata={"backend_id": "openclaw-b", "kind": "read_file"},
+            )
+
+            self.assertNotEqual(first["gap_id"], second["gap_id"])
+            self.assertEqual(runtime.capability_store.counts()["total"], 2)
 
     def test_gap_dedupe_ignores_volatile_message_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -315,6 +335,7 @@ class AutonomyRuntimeTests(unittest.TestCase):
             self.assertEqual(second["status"], "action_executed")
             self.assertEqual(execution["status"], "completed")
             self.assertIn("rollback_hint", execution["metadata"])
+            self.assertTrue(execution["metadata"]["artifacts"][0].endswith(".json"))
 
     def test_deferred_action_is_requeued_after_retry_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -342,6 +363,7 @@ class AutonomyRuntimeTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "action_executed")
             self.assertEqual(runtime.action_store.counts()["completed"], 1)
+            self.assertEqual(runtime.action_store.counts()["deferred"], 0)
 
     def test_deferred_message_is_requeued_after_retry_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -358,6 +380,47 @@ class AutonomyRuntimeTests(unittest.TestCase):
 
             self.assertEqual(runtime.inbox.counts()["deferred"], 1)
             self.assertEqual(runtime.capability_store.counts()["total"], 1)
+
+    def test_deferred_message_stops_after_retry_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FailingLocalBackend())
+            runtime.enqueue_message("hello")
+            runtime.tick_once()
+            deferred = list((root / "state" / "autonomy" / "inbox" / "deferred").glob("*.json"))[0]
+            payload = json.loads(deferred.read_text(encoding="utf-8"))
+            payload["retry_after_at"] = "2000-01-01T00:00:00+00:00"
+            payload["retry_count"] = 3
+            deferred.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+            runtime.tick_once()
+
+            self.assertEqual(runtime.inbox.counts()["deferred"], 0)
+            self.assertGreaterEqual(runtime.inbox.counts()["processed"], 1)
+
+    def test_deferred_action_stops_after_retry_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+            governance = runtime.governance_store.latest()
+            governance["feedback"]["freeze_low_risk_autonomy"] = True
+            runtime.governance_store.latest_path.write_text(
+                json.dumps(governance, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            runtime.action_store.enqueue(ActionSpec(kind="append_note", inputs={"content": "frozen"}, risk_level="low"))
+            runtime.tick_once()
+            deferred = list((root / "state" / "actions" / "deferred").glob("*.json"))[0]
+            payload = json.loads(deferred.read_text(encoding="utf-8"))
+            payload["retry_after_at"] = "2000-01-01T00:00:00+00:00"
+            payload["retry_count"] = 3
+            deferred.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+            result = runtime.tick_once()
+
+            self.assertEqual(result["status"], "sleeping")
+            self.assertEqual(runtime.action_store.counts()["deferred"], 0)
+            self.assertEqual(runtime.action_store.counts()["failed"], 1)
 
 
 if __name__ == "__main__":

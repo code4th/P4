@@ -512,6 +512,8 @@ Current limitation:
 - approved capability proposals are first turned into bounded self-extension tasks, not direct unrestricted self-rewrites
 - capability execution is deduplicated per proposal and reconciled after the queued task completes or fails, with rollback hints retained in `state/capabilities/executions.jsonl`
 - deferred inbox items and deferred actions are now retried through explicit deferred queues instead of being silently dropped or permanently blocking the head of the queue
+- deferred retries now stop after a bounded retry limit instead of looping forever on the same failure
+- approved capability work is now materialized as a bounded implementation task artifact under `state/capabilities/tasks/`, not only as a free-form note
 - the new `openclaw_backend` config block is an explicit opt-in adapter contract, not a signal to move default cognition away from local-first routing
 
 ## 9. Rollback Principles

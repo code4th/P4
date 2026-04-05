@@ -96,6 +96,7 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 - approved capability work is first materialized as a bounded task note before any stronger self-modification path
 - inspect `state/capabilities/executions.jsonl` to confirm whether that bounded task completed, failed, or left a rollback hint
 - inspect `state/autonomy/inbox/deferred/` and `state/actions/deferred/` when work is postponed by conservative policy; these entries are retried later rather than discarded
+- inspect `state/capabilities/tasks/` for the latest bounded implementation tasks generated from approved capability proposals
 
 ## Verified outputs after growth loop
 

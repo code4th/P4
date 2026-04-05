@@ -26,10 +26,24 @@ def _gap_key(*, title: str, detail: str, source: str, metadata: dict[str, Any] |
 
 
 def _stable_gap_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    dropped_keys = {"message_id", "action_id", "request_id", "execution_id", "review_id", "proposal_id"}
+    dropped_keys = {
+        "message_id",
+        "action_id",
+        "request_id",
+        "execution_id",
+        "review_id",
+        "proposal_id",
+        "recorded_at",
+        "created_at",
+        "updated_at",
+        "processed_at",
+        "deferred_at",
+        "requeued_at",
+        "retry_after_at",
+    }
     stable: dict[str, Any] = {}
     for key, value in metadata.items():
-        if key in dropped_keys or key.endswith("_id") or key.endswith("_at"):
+        if key in dropped_keys:
             continue
         stable[key] = value
     return stable

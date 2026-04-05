@@ -17,6 +17,15 @@ def _timestamp() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def _resolve_within_root(root: Path, relative_path: str) -> Path:
     candidate = (root / relative_path).resolve()
     root_resolved = root.resolve()
@@ -27,6 +36,7 @@ def _resolve_within_root(root: Path, relative_path: str) -> Path:
 
 INTRINSIC_ACTION_RISK = {
     "append_note": "low",
+    "write_capability_task": "low",
     "read_file": "low",
     "ingest_observation": "low",
     "queue_background_analysis": "low",
@@ -132,17 +142,27 @@ class ActionStore:
 
     def mark_deferred(self, action_id: str, reason: str, *, retry_after_at: str) -> dict[str, Any]:
         payload = self._read(self.queue_dir, action_id)
+        retries = int(payload.get("retry_count", 0)) + 1
         payload["status"] = "deferred"
         payload["defer_reason"] = reason
         payload["retry_after_at"] = retry_after_at
+        payload["retry_count"] = retries
         return self._move_payload(self.queue_dir, self.deferred_dir, action_id, payload)
 
     def requeue_due_deferred(self, *, now_iso: str) -> list[dict[str, Any]]:
+        now = _parse_iso(now_iso) or datetime.now(UTC)
         requeued: list[dict[str, Any]] = []
         for path in sorted(self.deferred_dir.glob("*.json")):
             payload = json.loads(path.read_text(encoding="utf-8"))
-            retry_after_at = str(payload.get("retry_after_at", ""))
-            if retry_after_at and retry_after_at > now_iso:
+            retry_after_at = _parse_iso(str(payload.get("retry_after_at", "")))
+            if retry_after_at and retry_after_at > now:
+                continue
+            if int(payload.get("retry_count", 0)) >= int(payload.get("max_retries", 3)):
+                payload["status"] = "failed"
+                payload["error"] = payload.get("defer_reason", "retry limit reached")
+                target = self.failed_dir / path.name
+                target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                path.unlink()
                 continue
             payload["status"] = "queued"
             payload["requeued_at"] = now_iso
@@ -239,6 +259,26 @@ class ActionExecutor:
                 stdout = f"wrote note to {note_path}"
                 artifacts.append(str(note_path))
                 rollback_hint = f"delete {note_path}"
+            elif spec.kind == "write_capability_task":
+                task_dir = self.root / "state" / "capabilities" / "tasks"
+                task_dir.mkdir(parents=True, exist_ok=True)
+                proposal_id = str(spec.inputs.get("proposal_id", spec.action_id)).replace(":", "-")
+                task_path = task_dir / f"{proposal_id}.json"
+                task_payload = {
+                    "proposal_id": spec.inputs.get("proposal_id"),
+                    "gap_id": spec.inputs.get("gap_id"),
+                    "summary": spec.inputs.get("summary"),
+                    "detail": spec.inputs.get("detail"),
+                    "implementation_scope": spec.inputs.get("implementation_scope", "bounded_internal_task"),
+                    "target_files": spec.inputs.get("target_files", []),
+                    "acceptance_checks": spec.inputs.get("acceptance_checks", []),
+                    "created_by_action_id": spec.action_id,
+                    "created_at": _timestamp(),
+                }
+                task_path.write_text(json.dumps(task_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                stdout = f"wrote capability task to {task_path}"
+                artifacts.append(str(task_path))
+                rollback_hint = f"delete {task_path}"
             elif spec.kind == "read_file":
                 path = _resolve_within_root(self.root, str(spec.inputs["path"]))
                 if spec.backend == "openclaw":
