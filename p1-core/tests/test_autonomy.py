@@ -368,6 +368,133 @@ class AutonomyRuntimeTests(unittest.TestCase):
             self.assertEqual(runtime.capability_task_store.counts()["pending"], 0)
             self.assertEqual(runtime.capability_task_store.counts()["in_progress"], 0)
             self.assertEqual(runtime.capability_task_store.counts()["done"], 1)
+            task = runtime.capability_task_store.list_all_tasks(limit=1)[0]
+            self.assertIn("rollback_hint", task["result"])
+
+    def test_deferred_capability_task_can_be_read_and_completed_after_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+            proposal = runtime.capability_store.record_proposal(
+                gap_id="capgap:test",
+                summary="Implement missing capability: low severity task",
+                proposal_type="capability_extension",
+                risk_level="low",
+                requires_approval=False,
+                detail="safe low-risk task",
+            )
+            runtime.capability_store.record_review(
+                proposal_id=proposal["proposal_id"],
+                gap_id=proposal["gap_id"],
+                evaluation={"decision": "candidate"},
+                governance={"proposal": proposal, "next_step": "autonomous_apply"},
+            )
+
+            runtime.tick_once()
+            runtime.tick_once()
+            governance = runtime.governance_store.latest()
+            governance["feedback"]["freeze_low_risk_autonomy"] = True
+            runtime.governance_store.latest_path.write_text(
+                json.dumps(governance, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            runtime.tick_once()
+            runtime.tick_once()
+            runtime.tick_once()
+            deferred_dir = root / "state" / "capabilities" / "deferred"
+            deferred = next(deferred_dir.glob("*.json"))
+            payload = json.loads(deferred.read_text(encoding="utf-8"))
+            payload["retry_after_at"] = "2000-01-01T00:00:00+00:00"
+            self.assertGreaterEqual(int(payload.get("retry_count", 0)), 1)
+            deferred.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            action_deferred_dir = root / "state" / "actions" / "deferred"
+            action_deferred = next(action_deferred_dir.glob("*.json"))
+            action_payload = json.loads(action_deferred.read_text(encoding="utf-8"))
+            action_payload["retry_after_at"] = "2000-01-01T00:00:00+00:00"
+            action_deferred.write_text(json.dumps(action_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            governance["feedback"]["freeze_low_risk_autonomy"] = False
+            runtime.governance_store.latest_path.write_text(
+                json.dumps(governance, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            runtime.tick_once()
+            runtime.tick_once()
+
+            self.assertGreaterEqual(runtime.capability_task_store.counts()["done"], 1)
+            self.assertEqual(runtime.capability_task_store.counts()["deferred"], 0)
+
+    def test_deferred_capability_task_stops_after_retry_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+            proposal = runtime.capability_store.record_proposal(
+                gap_id="capgap:test",
+                summary="Implement missing capability: low severity task",
+                proposal_type="capability_extension",
+                risk_level="low",
+                requires_approval=False,
+                detail="safe low-risk task",
+            )
+            runtime.capability_store.record_review(
+                proposal_id=proposal["proposal_id"],
+                gap_id=proposal["gap_id"],
+                evaluation={"decision": "candidate"},
+                governance={"proposal": proposal, "next_step": "autonomous_apply"},
+            )
+
+            runtime.tick_once()
+            runtime.tick_once()
+            runtime.tick_once()
+            governance = runtime.governance_store.latest()
+            governance["feedback"]["freeze_low_risk_autonomy"] = True
+            runtime.governance_store.latest_path.write_text(
+                json.dumps(governance, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            runtime.tick_once()
+
+            deferred_dir = root / "state" / "capabilities" / "deferred"
+            deferred = next(deferred_dir.glob("*.json"))
+            payload = json.loads(deferred.read_text(encoding="utf-8"))
+            payload["retry_after_at"] = "2000-01-01T00:00:00+00:00"
+            payload["retry_count"] = 3
+            deferred.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+            action_deferred_dir = root / "state" / "actions" / "deferred"
+            action_deferred = next(action_deferred_dir.glob("*.json"))
+            action_payload = json.loads(action_deferred.read_text(encoding="utf-8"))
+            action_payload["retry_after_at"] = "2000-01-01T00:00:00+00:00"
+            action_payload["retry_count"] = 3
+            action_deferred.write_text(json.dumps(action_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+            result = runtime.tick_once()
+
+            self.assertEqual(result["status"], "sleeping")
+            self.assertEqual(runtime.capability_task_store.counts()["deferred"], 0)
+            self.assertGreaterEqual(runtime.capability_task_store.counts()["failed"], 1)
+
+    def test_write_file_records_backup_path_for_rollbacks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+            target = root / "workspace" / "note.txt"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("original\n", encoding="utf-8")
+            executor = ActionExecutor(
+                root=root,
+                background_job_store=runtime.background_jobs,
+                world_store=runtime.world_store,
+            )
+            result = executor.execute(
+                ActionSpec(kind="write_file", inputs={"path": "workspace/note.txt", "content": "updated"})
+            )
+
+            self.assertEqual(result.status, "completed")
+            self.assertIsNotNone(result.rollback_hint)
+            self.assertIn("restore ", result.rollback_hint or "")
+            self.assertIn("to", result.rollback_hint or "")
+            backups = list((root / "state" / "rollback" / "backups").glob("*.bak"))
+            self.assertEqual(len(backups), 1)
 
     def test_deferred_action_is_requeued_after_retry_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

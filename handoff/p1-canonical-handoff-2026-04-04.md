@@ -422,6 +422,7 @@ python3 -m p1_core.cli queue-action --kind append_note --inputs '{"content":"aut
 - bounded implementation task は autonomy surface から inspect 可能で、次の tick で処理候補になる
 - bounded implementation task は `pending -> in_progress -> done/failed` の状態遷移を持つ
 - deferred task attempts remain deferred, not failed, and preserve retry context
+- bounded implementation task の完了は capability 完成そのものではなく、実装証跡と rollback 可能性を残す中間成果として扱う
 - write actions keep a pre-image backup under `state/rollback/backups/` when overwriting existing files
 
 ## 8. 検証済み事項

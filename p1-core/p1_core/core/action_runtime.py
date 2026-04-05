@@ -257,19 +257,27 @@ class ActionExecutor:
                 note_dir = self.root / "state" / "actions" / "notes"
                 note_dir.mkdir(parents=True, exist_ok=True)
                 note_path = note_dir / f"{spec.action_id.replace(':', '-')}.md"
-                self._backup_if_exists(note_path)
+                backup_path = self._backup_if_exists(note_path)
                 note_path.write_text(str(spec.inputs.get("content", "")) + "\n", encoding="utf-8")
                 stdout = f"wrote note to {note_path}"
                 artifacts.append(str(note_path))
-                rollback_hint = f"delete {note_path}"
+                if backup_path:
+                    artifacts.append(str(backup_path))
+                    rollback_hint = f"restore {backup_path} to {note_path}"
+                else:
+                    rollback_hint = f"delete {note_path}"
             elif spec.kind == "write_note_file":
                 path = _resolve_within_root(self.root, str(spec.inputs["path"]))
                 path.parent.mkdir(parents=True, exist_ok=True)
-                self._backup_if_exists(path)
+                backup_path = self._backup_if_exists(path)
                 path.write_text(str(spec.inputs.get("content", "")) + "\n", encoding="utf-8")
                 stdout = f"wrote note file {path}"
                 artifacts.append(str(path))
-                rollback_hint = f"delete {path}"
+                if backup_path:
+                    artifacts.append(str(backup_path))
+                    rollback_hint = f"restore {backup_path} to {path}"
+                else:
+                    rollback_hint = f"delete {path}"
             elif spec.kind == "write_capability_task":
                 task_dir = self.root / "state" / "capabilities" / "tasks"
                 task_dir.mkdir(parents=True, exist_ok=True)
@@ -323,6 +331,7 @@ class ActionExecutor:
                 artifacts.append(str(path))
             elif spec.kind == "write_file":
                 path = _resolve_within_root(self.root, str(spec.inputs["path"]))
+                backup_path: Path | None = None
                 if spec.backend == "openclaw":
                     if self.openclaw_backend is None:
                         raise RuntimeError("openclaw action backend is not configured")
@@ -330,11 +339,15 @@ class ActionExecutor:
                     stdout = json.dumps(payload, ensure_ascii=False)
                 else:
                     path.parent.mkdir(parents=True, exist_ok=True)
-                    self._backup_if_exists(path)
+                    backup_path = self._backup_if_exists(path)
                     path.write_text(str(spec.inputs.get("content", "")), encoding="utf-8")
                     stdout = f"wrote file {path}"
                 artifacts.append(str(path))
-                rollback_hint = f"restore backup for {path}"
+                if backup_path:
+                    artifacts.append(str(backup_path))
+                    rollback_hint = f"restore {backup_path} to {path}"
+                else:
+                    rollback_hint = f"delete {path}"
             elif spec.kind == "run_command":
                 argv = spec.inputs.get("argv")
                 if not isinstance(argv, list) or not argv:
@@ -402,10 +415,11 @@ class ActionExecutor:
             duration_ms=int((datetime.now(UTC) - started_at).total_seconds() * 1000),
         )
 
-    def _backup_if_exists(self, path: Path) -> None:
+    def _backup_if_exists(self, path: Path) -> Path | None:
         if not path.exists():
-            return
+            return None
         backup_dir = self.root / "state" / "rollback" / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         backup_path = backup_dir / f"{path.name}.{uuid.uuid4()}.bak"
         backup_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+        return backup_path

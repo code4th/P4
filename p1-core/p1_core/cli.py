@@ -235,7 +235,8 @@ def operator_show_capability_gaps(root: Path) -> dict[str, Any]:
         "executionCounts": runtime.capability_store.execution_counts(),
         "executions": runtime.capability_store.list_executions(limit=20),
         "taskCounts": runtime.capability_task_store.counts(),
-        "tasks": runtime.capability_task_store.list_tasks(limit=20),
+        "pendingTasks": runtime.capability_task_store.list_tasks(limit=20),
+        "allTasks": runtime.capability_task_store.list_all_tasks(limit=50),
     }
 
 
@@ -243,7 +244,8 @@ def operator_show_capability_tasks(root: Path) -> dict[str, Any]:
     runtime = _autonomy_runtime(root)
     return {
         "taskCounts": runtime.capability_task_store.counts(),
-        "tasks": runtime.capability_task_store.list_tasks(limit=20),
+        "pendingTasks": runtime.capability_task_store.list_tasks(limit=20),
+        "allTasks": runtime.capability_task_store.list_all_tasks(limit=50),
     }
 
 

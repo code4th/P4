@@ -93,12 +93,13 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 - inspect `state/capabilities/gaps.jsonl` or `show-capability-gaps` when P1 hits missing hand/foot capability boundaries
 - inspect `state/capabilities/proposals.jsonl` as the first self-extension staging area
 - inspect `state/capabilities/reviews.jsonl` and `state/capabilities/cloud_evaluation/requests/` for approval-required capability work
-- approved capability work is first materialized as a bounded task note before any stronger self-modification path
+- approved capability work is first materialized as a bounded implementation task artifact before any stronger self-modification path
 - inspect `state/capabilities/executions.jsonl` to confirm whether that bounded task completed, failed, or left a rollback hint
 - inspect `state/autonomy/inbox/deferred/` and `state/actions/deferred/` when work is postponed by conservative policy; these entries are retried later rather than discarded
 - inspect `state/capabilities/tasks/` for the latest bounded implementation tasks generated from approved capability proposals
-- use `show-capability-tasks` when you want the runtime-facing view of pending implementation work
-- bounded tasks should not be treated as static notes; check `in-progress/`, `done/`, and `failed/` when tracing an implementation attempt
+- use `show-capability-tasks` when you want the runtime-facing view of pending implementation work and the full task history
+- bounded tasks should not be treated as static notes; check `in-progress/`, `deferred/`, `done/`, and `failed/` when tracing an implementation attempt
+- a completed bounded task means the implementation step finished, not necessarily that the underlying capability has fully grown
 - if a task was deferred, check its retry context before marking it failed
 - if a file-writing action completed, inspect `state/rollback/backups/` for the pre-image used by rollback hints
 

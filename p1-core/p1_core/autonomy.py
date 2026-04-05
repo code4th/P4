@@ -262,9 +262,15 @@ class AutonomyRuntime:
         try:
             self.inbox.requeue_due_deferred(now=moment)
             self.action_store.requeue_due_deferred(now_iso=_iso(moment))
+            self.capability_task_store.requeue_due_deferred(now=_iso(moment))
             queued_message = self.inbox.next_message()
             has_actions = self.action_store.counts().get("queued", 0) > 0
-            has_task_work = self.capability_task_store.counts().get("pending", 0) > 0 or self.capability_task_store.counts().get("in_progress", 0) > 0
+            task_counts = self.capability_task_store.counts()
+            has_task_work = (
+                task_counts.get("pending", 0) > 0
+                or task_counts.get("in_progress", 0) > 0
+                or task_counts.get("deferred", 0) > 0
+            )
             if self._should_sleep(
                 state,
                 moment,
@@ -794,6 +800,7 @@ class AutonomyRuntime:
                         "action_kind": action_record.get("kind"),
                         "stdout": result.get("stdout"),
                         "artifacts": result.get("artifacts", []),
+                        "rollback_hint": result.get("rollback_hint"),
                     },
                 )
         elif action_record.get("status") == "failed":

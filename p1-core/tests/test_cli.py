@@ -190,6 +190,8 @@ class OperatorCliTests(unittest.TestCase):
             self.assertEqual(payload["counts"]["total"], 1)
             self.assertEqual(payload["gaps"][0]["source"], "autonomy.message")
             self.assertEqual(payload["proposalCounts"]["total"], 0)
+            self.assertIn("pendingTasks", payload)
+            self.assertIn("allTasks", payload)
 
     def test_capability_gap_turns_into_proposal_on_next_tick(self) -> None:
         class FailingClient:
@@ -287,7 +289,9 @@ class OperatorCliTests(unittest.TestCase):
             self.assertEqual(tasks["taskCounts"]["pending"], 0)
             self.assertEqual(tasks["taskCounts"]["in_progress"], 0)
             self.assertEqual(tasks["taskCounts"]["done"], 1)
-            self.assertEqual(tasks["tasks"], [])
+            self.assertEqual(tasks["pendingTasks"], [])
+            self.assertEqual(tasks["allTasks"][0]["status"], "done")
+            self.assertIn("in_progress", tasks["taskCounts"])
 
     def test_capability_execution_completes_and_is_auditable(self) -> None:
         class FakeClient:
