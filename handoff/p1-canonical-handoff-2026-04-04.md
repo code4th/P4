@@ -413,6 +413,7 @@ python3 -m p1_core.cli queue-action --kind append_note --inputs '{"content":"aut
 - missing backend / unsupported action を `state/capabilities/gaps.jsonl` に記録できる
 - `config.json` の `openclaw_backend` を有効化したときだけ OpenClaw CLI adapter を backend として使う
 - 未提案の capability gap は `state/capabilities/proposals.jsonl` に first-pass self-extension proposal を起こせる
+- capability proposal は `state/capabilities/reviews.jsonl` に first-pass governance review を持ち、approval-required なものは `state/capabilities/cloud_evaluation/requests/` に回る
 
 ## 8. 検証済み事項
 

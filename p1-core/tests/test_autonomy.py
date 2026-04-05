@@ -156,6 +156,7 @@ class AutonomyRuntimeTests(unittest.TestCase):
             self.assertEqual(payload["actionCounts"]["queued"], 0)
             self.assertIn("capabilityGapCounts", payload)
             self.assertIn("capabilityProposalCounts", payload)
+            self.assertIn("capabilityReviewCounts", payload)
             self.assertIn("llmUsage", payload)
 
     def test_openclaw_action_without_backend_records_capability_gap(self) -> None:
@@ -189,6 +190,26 @@ class AutonomyRuntimeTests(unittest.TestCase):
             self.assertEqual(runtime.capability_store.proposal_counts()["total"], 1)
             proposal = runtime.capability_store.list_proposals(limit=1)[0]
             self.assertEqual(proposal["proposal_type"], "capability_extension")
+
+    def test_capability_proposal_is_reviewed_and_queues_cloud_request(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+            runtime.capability_store.record_proposal(
+                gap_id="capgap:test",
+                summary="Implement missing capability: conversation backend unavailable from autonomy.message (medium severity)",
+                proposal_type="capability_extension",
+                risk_level="medium",
+                requires_approval=True,
+                detail="missing backend",
+            )
+
+            result = runtime.tick_once()
+
+            self.assertEqual(result["status"], "capability_review_recorded")
+            self.assertEqual(runtime.capability_store.review_counts()["approval_pending"], 1)
+            reviews = runtime.capability_store.list_reviews(limit=1)
+            self.assertEqual(reviews[0]["governance"]["next_step"], "await_cloud_approval")
 
 
 if __name__ == "__main__":

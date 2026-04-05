@@ -92,6 +92,7 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
 - keep `openclaw_backend` disabled by default and opt in explicitly
 - inspect `state/capabilities/gaps.jsonl` or `show-capability-gaps` when P1 hits missing hand/foot capability boundaries
 - inspect `state/capabilities/proposals.jsonl` as the first self-extension staging area
+- inspect `state/capabilities/reviews.jsonl` and `state/capabilities/cloud_evaluation/requests/` for approval-required capability work
 
 ## Verified outputs after growth loop
 

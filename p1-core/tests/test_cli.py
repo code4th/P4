@@ -212,6 +212,7 @@ class OperatorCliTests(unittest.TestCase):
                 payload = operator_show_capability_gaps(root)
             self.assertEqual(payload["proposalCounts"]["total"], 1)
             self.assertEqual(payload["proposals"][0]["proposal_type"], "capability_extension")
+            self.assertEqual(payload["reviewCounts"]["total"], 0)
 
     def test_operator_ingest_can_queue_background_analysis(self) -> None:
         class FakeClient:

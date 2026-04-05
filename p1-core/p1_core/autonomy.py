@@ -11,7 +11,10 @@ from p1_core.core.action_runtime import ActionExecutor, ActionPolicy, ActionSpec
 from p1_core.core.background_job_store import BackgroundJobStore
 from p1_core.core.chat_agent import ChatAgent
 from p1_core.core.capability_store import CapabilityStore
+from p1_core.core.cloud_evaluation import CloudEvaluationStore
 from p1_core.core.conversation_store import ConversationStore
+from p1_core.core.evaluator import Evaluator
+from p1_core.core.governor import Governor
 from p1_core.core.governance_store import GovernanceStore
 from p1_core.core.llm_runtime import LLMRouter, LLMUsageStore, TextLLMBackend
 from p1_core.core.policy_engine import PolicyEngine
@@ -108,10 +111,13 @@ class AutonomyRuntime:
     conversation_store: ConversationStore = field(init=False)
     governance_store: GovernanceStore = field(init=False)
     capability_store: CapabilityStore = field(init=False)
+    capability_cloud_store: CloudEvaluationStore = field(init=False)
     inbox: InboxStore = field(init=False)
     usage_store: LLMUsageStore = field(init=False)
     executor: ActionExecutor = field(init=False)
     policy_engine: PolicyEngine = field(init=False)
+    evaluator: Evaluator = field(init=False)
+    governor: Governor = field(init=False)
 
     def __post_init__(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -121,9 +127,12 @@ class AutonomyRuntime:
         self.conversation_store = ConversationStore(self.root / "state" / "conversation")
         self.governance_store = GovernanceStore(self.root / "state" / "governance")
         self.capability_store = CapabilityStore(self.root / "state" / "capabilities")
+        self.capability_cloud_store = CloudEvaluationStore(self.root / "state" / "capabilities" / "cloud_evaluation")
         self.inbox = InboxStore(self.state_dir / "inbox")
         self.usage_store = LLMUsageStore(self.root / "state" / "budgets")
         self.policy_engine = PolicyEngine()
+        self.evaluator = Evaluator()
+        self.governor = Governor()
         self.executor = ActionExecutor(
             root=self.root,
             background_job_store=self.background_jobs,
@@ -188,6 +197,8 @@ class AutonomyRuntime:
             "recentCapabilityGaps": self.capability_store.list_gaps(limit=5),
             "capabilityProposalCounts": self.capability_store.proposal_counts(),
             "recentCapabilityProposals": self.capability_store.list_proposals(limit=5),
+            "capabilityReviewCounts": self.capability_store.review_counts(),
+            "recentCapabilityReviews": self.capability_store.list_reviews(limit=5),
             "llmUsage": self.usage_store.counts(),
         }
 
@@ -426,6 +437,25 @@ class AutonomyRuntime:
                 "next_wake_at": _iso(next_wake),
             }
 
+        pending_proposal = self._next_unreviewed_proposal()
+        if pending_proposal:
+            review = self._review_capability_proposal(pending_proposal)
+            next_wake = moment + timedelta(seconds=300)
+            self.save_state(
+                {
+                    **state,
+                    "current_focus": "capability_review",
+                    "last_tick_at": _iso(moment),
+                    "next_wake_at": _iso(next_wake),
+                    "last_tick_summary": f"capability review recorded for {pending_proposal['proposal_id']}",
+                }
+            )
+            return {
+                "status": "capability_review_recorded",
+                "review": review,
+                "next_wake_at": _iso(next_wake),
+            }
+
         idle_seconds = int(state.get("budget_policy", {}).get("idle_wake_seconds", 900))
         next_wake = moment + timedelta(seconds=idle_seconds)
         self.save_state(
@@ -445,24 +475,80 @@ class AutonomyRuntime:
                 return gap
         return None
 
+    def _next_unreviewed_proposal(self) -> dict[str, Any] | None:
+        for proposal in reversed(self.capability_store.list_proposals(limit=100)):
+            if not self.capability_store.has_review_for_proposal(str(proposal.get("proposal_id"))):
+                return proposal
+        return None
+
     def _proposal_from_gap(self, gap: dict[str, Any]) -> dict[str, Any]:
-        summary = (
-            f"Implement missing capability: {gap.get('title')} "
-            f"from {gap.get('source')} ({gap.get('severity')} severity)"
-        )
-        policy = self.policy_engine.classify(summary)
+        severity = str(gap.get("severity", "medium"))
+        if severity == "low":
+            risk_level = "low"
+            requires_approval = False
+        elif severity == "high":
+            risk_level = "high"
+            requires_approval = True
+        else:
+            risk_level = "medium"
+            requires_approval = True
+        summary = f"Implement missing capability: {gap.get('title')} from {gap.get('source')} ({severity} severity)"
         return self.capability_store.record_proposal(
             gap_id=str(gap["gap_id"]),
-            summary=policy.summary,
+            summary=summary,
             proposal_type="capability_extension",
-            risk_level=policy.risk_level,
-            requires_approval=policy.requires_approval,
+            risk_level=risk_level,
+            requires_approval=requires_approval,
             detail=str(gap.get("detail", "")),
             metadata={
                 "source": gap.get("source"),
                 "severity": gap.get("severity"),
                 "gap_metadata": gap.get("metadata", {}),
             },
+        )
+
+    def _review_capability_proposal(self, proposal: dict[str, Any]) -> dict[str, Any]:
+        governance_profile = self.governance_store.latest()
+        evaluation = self.evaluator.compare(
+            {
+                "state_history": [],
+                "matched_previous_summary": False,
+                "previous_snapshot_exists": False,
+                "previous_experiment_outcome": None,
+                "governance_profile": governance_profile,
+            },
+            {
+                "risk_level": proposal.get("risk_level"),
+                "summary": proposal.get("summary"),
+                "counterexamples_present": False,
+            },
+        )
+        governance = self.governor.gate(
+            {
+                **proposal,
+                "evaluation": evaluation,
+                "governance_profile": governance_profile,
+                "cloud_response": None,
+            }
+        )
+        cloud_request_path = None
+        if governance.get("next_step") == "await_cloud_approval":
+            request = self.capability_cloud_store.queue_request(
+                str(proposal["proposal_id"]),
+                {
+                    "proposal_type": proposal.get("proposal_type"),
+                    "summary": proposal.get("summary"),
+                    "risk_level": proposal.get("risk_level"),
+                    "detail": proposal.get("detail"),
+                },
+            )
+            cloud_request_path = str(request)
+        return self.capability_store.record_review(
+            proposal_id=str(proposal["proposal_id"]),
+            gap_id=str(proposal["gap_id"]),
+            evaluation=evaluation,
+            governance=governance,
+            cloud_request_path=cloud_request_path,
         )
 
     def _should_sleep(self, state: dict[str, Any], moment: datetime, *, has_inbox: bool) -> bool:

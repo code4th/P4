@@ -98,6 +98,10 @@ class CapabilityStore:
     def proposals_path(self) -> Path:
         return self.root / "proposals.jsonl"
 
+    @property
+    def reviews_path(self) -> Path:
+        return self.root / "reviews.jsonl"
+
     def list_proposals(self, *, limit: int = 20) -> list[dict[str, Any]]:
         if not self.proposals_path.exists():
             return []
@@ -118,3 +122,47 @@ class CapabilityStore:
 
     def has_proposal_for_gap(self, gap_id: str) -> bool:
         return any(row.get("gap_id") == gap_id for row in self.list_proposals(limit=100000))
+
+    def record_review(
+        self,
+        *,
+        proposal_id: str,
+        gap_id: str,
+        evaluation: dict[str, Any],
+        governance: dict[str, Any],
+        cloud_request_path: str | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "review_id": f"capreview:{uuid.uuid4()}",
+            "proposal_id": proposal_id,
+            "gap_id": gap_id,
+            "evaluation": evaluation,
+            "governance": governance,
+            "cloud_request_path": cloud_request_path,
+            "recorded_at": _now(),
+        }
+        with self.reviews_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return payload
+
+    def list_reviews(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        if not self.reviews_path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        for line in self.reviews_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            rows.append(json.loads(line))
+        return rows[-limit:]
+
+    def review_counts(self) -> dict[str, int]:
+        rows = self.list_reviews(limit=100000)
+        return {
+            "total": len(rows),
+            "approval_pending": sum(1 for row in rows if row.get("governance", {}).get("next_step") == "await_cloud_approval"),
+            "autonomous_apply": sum(1 for row in rows if row.get("governance", {}).get("next_step") == "autonomous_apply"),
+            "deferred": sum(1 for row in rows if "defer" in str(row.get("governance", {}).get("next_step", ""))),
+        }
+
+    def has_review_for_proposal(self, proposal_id: str) -> bool:
+        return any(row.get("proposal_id") == proposal_id for row in self.list_reviews(limit=100000))
