@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
+from urllib import error as urlerror
+from urllib import request as urlrequest
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,9 +20,15 @@ from p1_core.core.conversation_store import ConversationStore
 from p1_core.core.evaluator import Evaluator
 from p1_core.core.governor import Governor
 from p1_core.core.governance_store import GovernanceStore
+from p1_core.core.knowledge_store import KnowledgeStore
+from p1_core.core.metaagent import load_recent_history as load_metaagent_history
 from p1_core.core.llm_runtime import LLMRouter, LLMUsageStore, TextLLMBackend
 from p1_core.core.policy_engine import PolicyEngine
+from p1_core.core.thought_policy import build_purpose_initiative_payload, fallback_purpose_candidates, purpose_brief
 from p1_core.core.world_store import WorldStore
+from p1_core.pipeline.growth_loop import GrowthLoop, build_loop
+from p1_core.worker.ollama_client import OllamaClient, OllamaError
+from p1_core.worker.service import WorkerService
 
 
 def _now() -> datetime:
@@ -34,6 +43,67 @@ def _read_json(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
     if not path.exists():
         return fallback
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _safe_json_from_text(text: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    raise json.JSONDecodeError("no json object found", text, 0)
+
+
+def _initiative_is_internal_only(payload: dict[str, Any]) -> bool:
+    haystack = " ".join(
+        str(payload.get(key, "")) for key in ("summary", "next_step", "why", "expected_effect", "note", "scope")
+    ).lower()
+    forbidden = (
+        "friend",
+        "message",
+        "email",
+        "call",
+        "contact",
+        "personal",
+        "external",
+        "browser",
+        "web",
+        "send",
+        "human",
+        "someone",
+        "recipient",
+    )
+    if payload.get("scope") not in {None, "internal"}:
+        return False
+    return not any(word in haystack for word in forbidden)
+
+
+def _initiative_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = payload.get("candidates")
+    if isinstance(candidates, list):
+        return [candidate for candidate in candidates if isinstance(candidate, dict)]
+    return []
+
+
+def _selected_initiative_candidate(payload: dict[str, Any]) -> dict[str, Any] | None:
+    selected = payload.get("selected_candidate")
+    if isinstance(selected, dict):
+        return selected
+    candidates = _initiative_candidates(payload)
+    if candidates:
+        return candidates[0]
+    return None
 
 
 @dataclass(slots=True)
@@ -138,11 +208,66 @@ class InboxStore:
 
 
 @dataclass(slots=True)
+class HeartbeatStore:
+    root: Path
+
+    def __post_init__(self) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def path(self) -> Path:
+        return self.root / "heartbeats.jsonl"
+
+    def record(self, payload: dict[str, Any]) -> dict[str, Any]:
+        entry = {"recorded_at": _iso(), **payload}
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return entry
+
+    def list_recent(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        if not self.path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+        return rows[-limit:]
+
+
+@dataclass(slots=True)
+class InitiativeStore:
+    root: Path
+
+    def __post_init__(self) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def path(self) -> Path:
+        return self.root / "initiatives.jsonl"
+
+    def record(self, payload: dict[str, Any]) -> dict[str, Any]:
+        entry = {"recorded_at": _iso(), **payload}
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return entry
+
+    def list_recent(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        if not self.path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+        return rows[-limit:]
+
+
+@dataclass(slots=True)
 class AutonomyRuntime:
     root: Path
     local_llm_backend: TextLLMBackend
     openclaw_llm_backend: TextLLMBackend | None = None
     openclaw_action_backend: OpenClawActionBackend | None = None
+    worker_model: str = "qwen3:4b-instruct"
     action_store: ActionStore = field(init=False)
     background_jobs: BackgroundJobStore = field(init=False)
     world_store: WorldStore = field(init=False)
@@ -152,11 +277,15 @@ class AutonomyRuntime:
     capability_task_store: CapabilityTaskStore = field(init=False)
     capability_cloud_store: CloudEvaluationStore = field(init=False)
     inbox: InboxStore = field(init=False)
+    heartbeat_store: HeartbeatStore = field(init=False)
+    initiative_store: InitiativeStore = field(init=False)
     usage_store: LLMUsageStore = field(init=False)
     executor: ActionExecutor = field(init=False)
     policy_engine: PolicyEngine = field(init=False)
     evaluator: Evaluator = field(init=False)
     governor: Governor = field(init=False)
+    growth_loop: GrowthLoop = field(init=False)
+    knowledge_store: KnowledgeStore = field(init=False)
 
     def __post_init__(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -169,6 +298,8 @@ class AutonomyRuntime:
         self.capability_task_store = CapabilityTaskStore(self.root / "state" / "capabilities")
         self.capability_cloud_store = CloudEvaluationStore(self.root / "state" / "capabilities" / "cloud_evaluation")
         self.inbox = InboxStore(self.state_dir / "inbox")
+        self.heartbeat_store = HeartbeatStore(self.state_dir / "heartbeats")
+        self.initiative_store = InitiativeStore(self.state_dir / "initiatives")
         self.usage_store = LLMUsageStore(self.root / "state" / "budgets")
         self.policy_engine = PolicyEngine()
         self.evaluator = Evaluator()
@@ -179,6 +310,12 @@ class AutonomyRuntime:
             world_store=self.world_store,
             openclaw_backend=self.openclaw_action_backend,
         )
+        self.knowledge_store = KnowledgeStore(self.root / "state" / "knowledge" / "knowledge.jsonl")
+        worker_service = WorkerService(
+            llm_client=OllamaClient(model=self.worker_model),
+            log_dir=self.root / "logs" / "worker",
+        )
+        self.growth_loop = build_loop(self.root, worker_service)
 
     @property
     def state_dir(self) -> Path:
@@ -203,34 +340,161 @@ class AutonomyRuntime:
             "last_tick_at": None,
             "next_wake_at": None,
             "last_tick_summary": "runtime not started",
-            "cooldowns": {"openclaw_until": None},
-            "budget_policy": {
-                "local_first": True,
-                "per_tick_openclaw_cap": 1,
-                "openclaw_3h_soft_cap": 20,
-                "openclaw_daily_soft_cap": 40,
-                "default_wake_seconds": 300,
-                "idle_wake_seconds": 900,
-                "lease_seconds": 120,
+            "purpose": {
+                "statement": "I exist to help make the world better, while remaining auditable and reversible.",
+                "mutable": True,
+                "root_objectives": [
+                    "help make the world better",
+                    "maintain self-awareness of current state",
+                    "preserve logs, counterexamples, and rollback paths",
+                    "identify capability gaps that block world improvement",
+                    "grow through safe self-extension",
+                    "stay conservative about LLM and action usage",
+                ],
             },
-        }
+            "cooldowns": {"openclaw_until": None},
+            "coordination": {
+                "source_of_truth": "runtime-state.json",
+                "dashboard_notify_url": None,
+                "update_policy": "push_on_tick",
+                "single_writer": "autonomy_runtime",
+            },
+            "budget_policy": {
+                    "local_first": True,
+                    "per_tick_openclaw_cap": 1,
+                    "openclaw_3h_soft_cap": 20,
+                    "openclaw_daily_soft_cap": 40,
+                    "default_wake_seconds": 10,
+                    "idle_wake_seconds": 20,
+                    "lease_seconds": 10,
+                },
+            }
 
     def load_state(self) -> dict[str, Any]:
-        return _read_json(self.runtime_state_path, self.default_state())
+        state = _read_json(self.runtime_state_path, self.default_state())
+        merged = self._merge_default_state(state)
+        if merged != state:
+            self.save_state(merged)
+        return merged
 
     def save_state(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.runtime_state_path.parent.mkdir(parents=True, exist_ok=True)
         self.runtime_state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return payload
 
+    def dashboard_snapshot(self) -> dict[str, Any]:
+        state = self.show_state()
+        history: list[dict[str, Any]] = []
+        if self.ticks_path.exists():
+            rows = [json.loads(line) for line in self.ticks_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            for row in rows[-12:]:
+                executed: dict[str, Any] | None = None
+                if row.get("reply"):
+                    executed = {
+                        "type": "reply",
+                        "backend": row.get("reply_backend"),
+                        "message_id": row.get("message_id"),
+                    }
+                elif row.get("action"):
+                    action = row.get("action", {})
+                    executed = {
+                        "type": "action",
+                        "kind": action.get("kind"),
+                        "status": action.get("status"),
+                        "action_id": action.get("action_id"),
+                    }
+                elif row.get("proposal"):
+                    proposal = row.get("proposal", {})
+                    executed = {
+                        "type": "capability_proposal",
+                        "proposal_id": proposal.get("proposal_id"),
+                        "gap_id": proposal.get("gap_id"),
+                    }
+                elif row.get("review"):
+                    review = row.get("review", {})
+                    governance = review.get("governance", {})
+                    proposal = governance.get("proposal", {})
+                    executed = {
+                        "type": "capability_review",
+                        "proposal_id": proposal.get("proposal_id"),
+                        "next_step": governance.get("next_step"),
+                    }
+                elif row.get("execution"):
+                    execution = row.get("execution", {})
+                    executed = {
+                        "type": "capability_execution",
+                        "proposal_id": execution.get("proposal_id"),
+                        "status": execution.get("status"),
+                    }
+                elif row.get("status") == "idle":
+                    executed = {"type": "idle"}
+                history.append(
+                    {
+                        "timestamp": row.get("timestamp"),
+                        "status": row.get("status"),
+                        "thought": row.get("summary") or row.get("last_tick_summary") or row.get("status"),
+                        "next_wake_at": row.get("next_wake_at"),
+                        "trigger_kind": row.get("trigger_kind") or "不定期トリガー",
+                        "executed": executed,
+                    }
+                )
+        return {
+            "generated_at": _iso(),
+            "root": str(self.root),
+            "state": state,
+            "history": history,
+            "recent_reports": _read_json(self.root / "state" / "reports" / "daily" / "latest.json", {}),
+        }
+
+    def _merge_default_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        default = self.default_state()
+        merged = {**default, **state}
+        default_purpose = default.get("purpose", {})
+        merged_purpose = {**default_purpose, **state.get("purpose", {})}
+        merged["purpose"] = merged_purpose
+        default_budget = default.get("budget_policy", {})
+        merged_budget = {**default_budget, **state.get("budget_policy", {})}
+        merged["budget_policy"] = merged_budget
+        default_cooldowns = default.get("cooldowns", {})
+        merged_cooldowns = {**default_cooldowns, **state.get("cooldowns", {})}
+        merged["cooldowns"] = merged_cooldowns
+        default_coordination = default.get("coordination", {})
+        merged_coordination = {**default_coordination, **state.get("coordination", {})}
+        merged["coordination"] = merged_coordination
+        return merged
+
     def enqueue_message(self, content: str, *, source: str = "user") -> dict[str, Any]:
         return self.inbox.enqueue(content, source=source)
+
+    def update_purpose(
+        self,
+        *,
+        statement: str,
+        root_objectives: list[str] | None = None,
+        mutable: bool = True,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        state = self.load_state()
+        purpose = dict(state.get("purpose", {}))
+        purpose["statement"] = statement
+        purpose["mutable"] = mutable
+        if root_objectives is not None:
+            purpose["root_objectives"] = root_objectives
+        if metadata:
+            purpose["metadata"] = {**dict(purpose.get("metadata", {})), **metadata}
+        state["purpose"] = purpose
+        self.save_state(state)
+        return purpose
 
     def show_state(self) -> dict[str, Any]:
         state = self.load_state()
         return {
             **state,
             "inboxCounts": self.inbox.counts(),
+            "heartbeatCounts": {"recent": len(self.heartbeat_store.list_recent(limit=20))},
+            "recentHeartbeats": self.heartbeat_store.list_recent(limit=5),
+            "initiativeCounts": {"recent": len(self.initiative_store.list_recent(limit=20))},
+            "recentInitiatives": self.initiative_store.list_recent(limit=5),
             "actionCounts": self.action_store.counts(),
             "backgroundJobCounts": self.background_jobs.counts(),
             "capabilityGapCounts": self.capability_store.counts(),
@@ -243,7 +507,12 @@ class AutonomyRuntime:
             "recentCapabilityExecutions": self.capability_store.list_executions(limit=5),
             "capabilityTaskCounts": self.capability_task_store.counts(),
             "recentCapabilityTasks": self.capability_task_store.list_tasks(limit=5),
+            "metaagentCounts": {"recent": len(load_metaagent_history(self.root, limit=20))},
+            "recentMetaagentRuns": load_metaagent_history(self.root, limit=5),
             "llmUsage": self.usage_store.counts(),
+            "growthLoopState": _read_json(self.state_dir / "growth-cursor.json", {"last_processed_index": 0, "last_error": None, "last_success_at": None}),
+            "knowledgeStateCounts": self.knowledge_store.counts_by_state(),
+            "knowledgeRecordCount": sum(self.knowledge_store.counts_by_state().values()),
         }
 
     def tick_once(self, *, now: datetime | None = None) -> dict[str, Any]:
@@ -278,10 +547,14 @@ class AutonomyRuntime:
                 has_actions=has_actions,
                 has_task_work=has_task_work,
             ):
+                heartbeat = self._record_purpose_heartbeat(state, moment, reason="sleeping")
+                initiative = self._record_purpose_initiative(state, moment, reason="sleeping")
                 result = {
                     "status": "sleeping",
                     "summary": "no pending work and next wake has not arrived",
                     "next_wake_at": state.get("next_wake_at"),
+                    "heartbeat": heartbeat,
+                    "initiative": initiative,
                 }
                 self._record_tick(result)
                 return result
@@ -333,7 +606,7 @@ class AutonomyRuntime:
                 metadata={"message_id": message["message_id"]},
             )
             self.inbox.defer(message["message_id"], reason=str(exc))
-            next_wake = moment + timedelta(seconds=int(policy.get("default_wake_seconds", 300)))
+            next_wake = moment + timedelta(seconds=int(policy.get("default_wake_seconds", 10)))
             self.save_state(
                 {
                     **state,
@@ -358,7 +631,7 @@ class AutonomyRuntime:
         )
         self.inbox.complete(message["message_id"], reply=routed["text"], backend=routed["backend"])
 
-        next_wake = moment + timedelta(seconds=int(policy.get("default_wake_seconds", 300)))
+        next_wake = moment + timedelta(seconds=int(policy.get("default_wake_seconds", 10)))
         next_state = {
             **state,
             "current_focus": "conversation_followup" if self.inbox.counts()["queued"] > 0 else None,
@@ -465,6 +738,7 @@ class AutonomyRuntime:
             return {"status": "action_executed", "action": stored, "next_wake_at": _iso(next_wake)}
 
         if self.background_jobs.counts()["queued"] > 0:
+            heartbeat = self._record_purpose_heartbeat(state, moment, reason="background_jobs_pending")
             next_wake = moment + timedelta(seconds=300)
             self.save_state(
                 {
@@ -478,8 +752,14 @@ class AutonomyRuntime:
             return {
                 "status": "background_jobs_pending",
                 "summary": "background jobs remain queued for conservative processing",
+                "heartbeat": heartbeat,
                 "next_wake_at": _iso(next_wake),
             }
+
+        # --- Growth loop: self-improvement via observation ingestion ---
+        growth_result = self._try_growth_loop_tick(state, moment)
+        if growth_result is not None:
+            return growth_result
 
         pending_gap = self._next_unproposed_gap()
         if pending_gap:
@@ -557,8 +837,10 @@ class AutonomyRuntime:
                 "next_wake_at": _iso(next_wake),
             }
 
-        idle_seconds = int(state.get("budget_policy", {}).get("idle_wake_seconds", 900))
+        idle_seconds = int(state.get("budget_policy", {}).get("idle_wake_seconds", 20))
         next_wake = moment + timedelta(seconds=idle_seconds)
+        heartbeat = self._record_purpose_heartbeat(state, moment, reason="idle")
+        initiative = self._record_purpose_initiative(state, moment, reason="idle")
         self.save_state(
             {
                 **state,
@@ -566,9 +848,158 @@ class AutonomyRuntime:
                 "last_tick_at": _iso(moment),
                 "next_wake_at": _iso(next_wake),
                 "last_tick_summary": "idle tick completed without LLM usage",
+                "last_heartbeat_at": heartbeat["recorded_at"],
+                "last_initiative_at": initiative["recorded_at"],
             }
         )
-        return {"status": "idle", "summary": "no inbox or actions pending", "next_wake_at": _iso(next_wake)}
+        return {
+            "status": "idle",
+            "summary": "no inbox or actions pending",
+            "heartbeat": heartbeat,
+            "initiative": initiative,
+            "next_wake_at": _iso(next_wake),
+        }
+
+    def _try_growth_loop_tick(self, state: dict[str, Any], moment: datetime) -> dict[str, Any] | None:
+        """Gather unprocessed observations and feed them to the growth loop.
+
+        Returns a tick result dict if there was work to do, or None if no observations
+        were available to process.
+        """
+        growth_state_path = self.state_dir / "growth-cursor.json"
+        cursor = _read_json(growth_state_path, {"last_processed_index": 0, "last_error": None, "last_success_at": None})
+        last_index = int(cursor.get("last_processed_index", 0))
+
+        # Collect observations from world store
+        observations_path = self.world_store.observations_path
+        if not observations_path.exists():
+            return None
+        lines = observations_path.read_text(encoding="utf-8").splitlines()
+        total = len(lines)
+        if total <= last_index:
+            # Also try self-generated material: recent conversation, capability gaps, heartbeats
+            material = self._generate_self_reflection_material(state, moment)
+            if not material:
+                return None
+            observation_text = material
+        else:
+            # Process next batch of observations (up to 3 per tick to avoid long ticks)
+            batch_end = min(last_index + 3, total)
+            batch_lines = lines[last_index:batch_end]
+            texts = []
+            for line in batch_lines:
+                if line.strip():
+                    try:
+                        obs = json.loads(line)
+                        texts.append(str(obs.get("text", "")))
+                    except json.JSONDecodeError:
+                        continue
+            if not texts:
+                cursor["last_processed_index"] = batch_end
+                growth_state_path.parent.mkdir(parents=True, exist_ok=True)
+                growth_state_path.write_text(json.dumps(cursor, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                return None
+            observation_text = "\n---\n".join(texts)
+            cursor["last_processed_index"] = batch_end
+
+        policy = state.get("budget_policy", {})
+        try:
+            result = self.growth_loop.ingest_text(observation_text, date=moment.strftime("%Y-%m-%d"))
+            cursor["last_error"] = None
+            cursor["last_success_at"] = _iso(moment)
+            growth_state_path.parent.mkdir(parents=True, exist_ok=True)
+            growth_state_path.write_text(json.dumps(cursor, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            self.usage_store.record_call("local")
+            next_wake = moment + timedelta(seconds=int(policy.get("default_wake_seconds", 10)))
+            self.save_state(
+                {
+                    **state,
+                    "current_focus": "growth_loop_active",
+                    "last_tick_at": _iso(moment),
+                    "next_wake_at": _iso(next_wake),
+                    "last_tick_summary": f"growth loop ingested {result.get('records_written', 0)} records, {result.get('proposals_written', 0)} proposals",
+                }
+            )
+            return {
+                "status": "growth_loop_completed",
+                "summary": f"growth loop: {result.get('records_written', 0)} knowledge records, {result.get('proposals_written', 0)} proposals",
+                "growth_result": {
+                    "records_written": result.get("records_written", 0),
+                    "proposals_written": result.get("proposals_written", 0),
+                    "knowledge_state_counts": result.get("knowledge_state_counts", {}),
+                    "evaluation_decisions": result.get("evaluation_decisions", []),
+                },
+                "next_wake_at": _iso(next_wake),
+            }
+        except (OllamaError, Exception) as exc:
+            cursor["last_error"] = str(exc)
+            cursor["last_error_at"] = _iso(moment)
+            growth_state_path.parent.mkdir(parents=True, exist_ok=True)
+            growth_state_path.write_text(json.dumps(cursor, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            self.capability_store.record_gap(
+                title="growth loop ingestion failed",
+                detail=f"growth loop failed during observation ingestion: {exc}",
+                source="autonomy.growth_loop",
+                severity="medium",
+                metadata={"error": str(exc), "error_type": type(exc).__name__},
+            )
+            next_wake = moment + timedelta(seconds=int(policy.get("idle_wake_seconds", 20)))
+            self.save_state(
+                {
+                    **state,
+                    "current_focus": "growth_loop_error",
+                    "last_tick_at": _iso(moment),
+                    "next_wake_at": _iso(next_wake),
+                    "last_tick_summary": f"growth loop error: {exc}",
+                }
+            )
+            return {
+                "status": "growth_loop_error",
+                "summary": f"growth loop failed: {exc}",
+                "error": str(exc),
+                "next_wake_at": _iso(next_wake),
+            }
+
+    def _generate_self_reflection_material(self, state: dict[str, Any], moment: datetime) -> str | None:
+        """Generate material for the growth loop from internal state when no external observations exist."""
+        parts: list[str] = []
+
+        # Recent capability gaps as input
+        gaps = self.capability_store.list_gaps(limit=5)
+        if gaps:
+            gap_texts = [f"- {g.get('title', 'unknown')}: {g.get('detail', '')}" for g in gaps]
+            parts.append("Recent capability gaps:\n" + "\n".join(gap_texts))
+
+        # Recent conversation as input
+        recent = self.conversation_store.recent(limit=5)
+        if recent:
+            convo_texts = [f"- {m.get('role', 'unknown')}: {m.get('content', '')}" for m in recent]
+            parts.append("Recent conversation:\n" + "\n".join(convo_texts))
+
+        # Recent initiatives as input
+        initiatives = self.initiative_store.list_recent(limit=3)
+        if initiatives:
+            init_texts = [f"- {i.get('note', '')}" for i in initiatives if i.get("note")]
+            if init_texts:
+                parts.append("Recent initiatives:\n" + "\n".join(init_texts))
+
+        # Only generate material if there's something meaningful (not just empty state)
+        # Also throttle: only do self-reflection once every 5 minutes
+        growth_state_path = self.state_dir / "growth-cursor.json"
+        cursor = _read_json(growth_state_path, {})
+        last_success = cursor.get("last_success_at")
+        if last_success:
+            try:
+                last_at = datetime.fromisoformat(last_success)
+                if moment - last_at < timedelta(minutes=5):
+                    return None
+            except ValueError:
+                pass
+
+        if not parts:
+            return None
+
+        return "Self-reflection input for P1 growth loop:\n\n" + "\n\n".join(parts)
 
     def _next_unproposed_gap(self) -> dict[str, Any] | None:
         for gap in reversed(self.capability_store.list_gaps(limit=100)):
@@ -877,7 +1308,7 @@ class AutonomyRuntime:
 
     def _acquire_lease(self, state: dict[str, Any], moment: datetime) -> dict[str, Any]:
         self.lease_path.parent.mkdir(parents=True, exist_ok=True)
-        lease_seconds = int(state.get("budget_policy", {}).get("lease_seconds", 120))
+        lease_seconds = int(state.get("budget_policy", {}).get("lease_seconds", 10))
         if self.lease_path.exists():
             current = json.loads(self.lease_path.read_text(encoding="utf-8"))
             expires_at = current.get("expires_at")
@@ -904,3 +1335,172 @@ class AutonomyRuntime:
         self.ticks_path.parent.mkdir(parents=True, exist_ok=True)
         with self.ticks_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({"timestamp": _iso(), **payload}, ensure_ascii=False) + "\n")
+        self._notify_dashboard()
+
+    def _notify_dashboard(self) -> None:
+        state = self.load_state()
+        coordination = state.get("coordination", {})
+        notify_url = coordination.get("dashboard_notify_url") or os.environ.get("P1_DASHBOARD_NOTIFY_URL")
+        if not notify_url:
+            return
+        payload = self.dashboard_snapshot()
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urlrequest.Request(
+            str(notify_url),
+            data=data,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        try:
+            with urlrequest.urlopen(request, timeout=2) as response:
+                response.read()
+        except (urlerror.URLError, TimeoutError, OSError, ValueError):
+            return
+
+    def _record_purpose_heartbeat(self, state: dict[str, Any], moment: datetime, *, reason: str) -> dict[str, Any]:
+        purpose = state.get("purpose", {})
+        analysis = {
+            "reason": reason,
+            "current_focus": state.get("current_focus"),
+            "next_wake_at": state.get("next_wake_at"),
+            "inbox_queued": self.inbox.counts().get("queued", 0),
+            "action_queued": self.action_store.counts().get("queued", 0),
+            "task_pending": self.capability_task_store.counts().get("pending", 0),
+            "task_deferred": self.capability_task_store.counts().get("deferred", 0),
+            "task_in_progress": self.capability_task_store.counts().get("in_progress", 0),
+        }
+        note = (
+            "目的を確認した。"
+            f" 目的: {purpose.get('statement', 'self-improvement and auditability')}"
+            f"。現状は {reason}。"
+            f" inbox={analysis['inbox_queued']}, action={analysis['action_queued']},"
+            f" task_pending={analysis['task_pending']}, task_deferred={analysis['task_deferred']}."
+            " いまは外界に新しい観測がないため、内部の状態保持と次回起床の準備を優先する。"
+        )
+        return self.heartbeat_store.record(
+            {
+                "timestamp": _iso(moment),
+                "reason": reason,
+                "purpose": purpose,
+                "analysis": analysis,
+                "note": note,
+            }
+        )
+
+    def _record_purpose_initiative(self, state: dict[str, Any], moment: datetime, *, reason: str) -> dict[str, Any]:
+        purpose = state.get("purpose", {})
+        statement = str(purpose.get("statement") or "I exist to help make the world better.")
+        proposal = self._generate_purpose_initiative(state=state, moment=moment, reason=reason, statement=statement)
+        return self.initiative_store.record(
+            {
+                "timestamp": _iso(moment),
+                "reason": reason,
+                "purpose": purpose,
+                "proposal": proposal,
+                "note": proposal.get("note")
+                or "内部で次の改善機会を待つ準備を続ける。",
+            }
+        )
+
+    def _generate_purpose_initiative(
+        self,
+        *,
+        state: dict[str, Any],
+        moment: datetime,
+        reason: str,
+        statement: str,
+    ) -> dict[str, Any]:
+        policy = state.get("budget_policy", {})
+        router = LLMRouter(
+            local_backend=self.local_llm_backend,
+            openclaw_backend=self.openclaw_llm_backend,
+            usage_store=self.usage_store,
+            openclaw_3h_soft_cap=int(policy.get("openclaw_3h_soft_cap", 20)),
+            openclaw_daily_soft_cap=int(policy.get("openclaw_daily_soft_cap", 40)),
+            per_tick_openclaw_cap=int(policy.get("per_tick_openclaw_cap", 1)),
+            local_first=True,
+            local_failure_allows_openclaw=False,
+        )
+        recent_heartbeat = self.heartbeat_store.list_recent(limit=1)
+        prompt, system_prompt = build_purpose_initiative_payload(
+            state={
+                **state,
+                "inbox_queued": self.inbox.counts().get("queued", 0),
+                "action_queued": self.action_store.counts().get("queued", 0),
+                "task_pending": self.capability_task_store.counts().get("pending", 0),
+                "task_deferred": self.capability_task_store.counts().get("deferred", 0),
+                "task_in_progress": self.capability_task_store.counts().get("in_progress", 0),
+                "previous_problem_statement": state.get("previous_problem_statement"),
+                "previous_selected_candidate": state.get("previous_selected_candidate"),
+                "previous_selection_reason": state.get("previous_selection_reason"),
+            },
+            moment=moment,
+            reason=reason,
+            recent_heartbeat=recent_heartbeat[-1]["note"] if recent_heartbeat else None,
+        )
+        try:
+            routed = router.route_text(system_prompt, json.dumps(prompt, ensure_ascii=False), allow_openclaw=False)
+            proposal = _safe_json_from_text(routed["text"])
+            candidates = _initiative_candidates(proposal)
+            selected = _selected_initiative_candidate(proposal)
+            if not candidates or selected is None:
+                raise ValueError("initiative proposal did not include candidates")
+            if not _initiative_is_internal_only(selected):
+                raise ValueError("selected initiative candidate was not internal-only")
+        except Exception as exc:
+            candidates = fallback_purpose_candidates()
+            selected = candidates[0]
+            proposal = {
+                "problem_statement": "P1 is producing safe internal acknowledgements but not enough diagnostic thought.",
+                "diagnosis": "The thought loop has been structured around a single safe initiative instead of competing internal hypotheses and selection.",
+                "summary": selected["summary"],
+                "candidates": candidates,
+                "selected_candidate": selected,
+                "selection_reason": "Fallback to the first safe internal candidate because initiative generation failed.",
+                "next_step": selected["next_step"],
+                "why": f"fallback after initiative generation failure: {exc}",
+                "expected_effect": selected["expected_effect"],
+                "risk_level": selected["risk_level"],
+                "note": "内部で問題を特定し、複数の考え方を比べる。",
+            }
+        candidates = _initiative_candidates(proposal)
+        selected = _selected_initiative_candidate(proposal)
+        if not candidates:
+            selected = fallback_purpose_candidates()[0]
+            candidates = [selected]
+        if selected is None:
+            selected = candidates[0]
+        if not _initiative_is_internal_only(selected):
+            proposal = {
+                "problem_statement": "P1 is producing safe internal acknowledgements but not enough diagnostic thought.",
+                "diagnosis": "The thought loop has been structured around a single safe initiative instead of competing internal hypotheses and selection.",
+                "summary": "Identify why the current P1 behavior is too shallow.",
+                "candidates": candidates,
+                "selected_candidate": candidates[0],
+                "selection_reason": "Fallback to the first safe internal candidate because the selected candidate was not aligned.",
+                "next_step": candidates[0]["next_step"],
+                "why": "Fallback to an internal-only initiative because the model output was not aligned.",
+                "expected_effect": "Keep the system ready to improve through safe internal preparation.",
+                "risk_level": "low",
+            }
+            selected = candidates[0]
+        proposal.setdefault("candidates", candidates)
+        proposal.setdefault("selected_candidate", selected)
+        proposal.setdefault("selection_reason", selected.get("why") or "Keep the system oriented toward its master purpose.")
+        proposal.setdefault("summary", selected.get("summary") or "Review current purpose alignment.")
+        proposal.setdefault("next_step", selected.get("next_step") or {
+            "kind": "self_diagnosis",
+            "scope": "internal",
+            "description": "Identify the current gap between the desired thinking behavior and the actual initiative pattern.",
+            "status": "queued",
+        })
+        proposal.setdefault("why", selected.get("why") or "Keep the system oriented toward its master purpose.")
+        proposal.setdefault("expected_effect", selected.get("expected_effect") or "Keep readiness to improve toward the current master purpose.")
+        proposal.setdefault("risk_level", selected.get("risk_level") or "low")
+        proposal.setdefault("problem_statement", "P1 is producing safe internal acknowledgements but not enough diagnostic thought.")
+        proposal.setdefault("diagnosis", "The thought loop needs competing hypotheses and explicit selection rather than a single safe phrase.")
+        proposal.setdefault("note", "内部で問題を特定し、複数の考え方を比べて選んだ。")
+        proposal["generated_at"] = _iso(moment)
+        proposal["reason"] = reason
+        proposal["purpose"] = purpose_brief(state.get("purpose", {}))
+        return proposal

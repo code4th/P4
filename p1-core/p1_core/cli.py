@@ -13,10 +13,12 @@ from p1_core.core.background_job_store import BackgroundJobStore
 from p1_core.core.conversation_store import ConversationStore
 from p1_core.core.governance_store import GovernanceStore
 from p1_core.core.knowledge_store import KnowledgeStore
+from p1_core.core.metaagent import SelfRepairMetaAgent, load_recent_history as load_metaagent_history
 from p1_core.core.llm_runtime import DisabledOpenClawLLMBackend
 from p1_core.core.policy_store import PolicyStore
 from p1_core.core.proposal_store import ProposalStore
 from p1_core.core.world_store import WorldStore
+from p1_core.dashboard import serve_dashboard
 from p1_core.pipeline.growth_loop import build_loop
 from p1_core.worker.ollama_client import OllamaClient
 from p1_core.worker.service import WorkerService
@@ -48,9 +50,9 @@ def _workspace_config(root: Path) -> dict[str, Any]:
             "per_tick_openclaw_cap": 1,
             "openclaw_3h_soft_cap": 20,
             "openclaw_daily_soft_cap": 40,
-            "default_wake_seconds": 300,
-            "idle_wake_seconds": 900,
-            "lease_seconds": 120,
+            "default_wake_seconds": 10,
+            "idle_wake_seconds": 20,
+            "lease_seconds": 10,
         },
     }
     if not config_path.exists():
@@ -208,6 +210,7 @@ def _autonomy_runtime(root: Path) -> AutonomyRuntime:
         local_llm_backend=OllamaClient(model=local_model),
         openclaw_llm_backend=openclaw_llm_backend,
         openclaw_action_backend=openclaw_action_backend,
+        worker_model=local_model,
     )
 
 
@@ -221,6 +224,75 @@ def operator_tick(root: Path) -> dict[str, Any]:
 
 def operator_show_autonomy_state(root: Path) -> dict[str, Any]:
     return _autonomy_runtime(root).show_state()
+
+
+def operator_show_autonomy_history(root: Path, *, limit: int = 20) -> dict[str, Any]:
+    runtime = _autonomy_runtime(root)
+    if not runtime.ticks_path.exists():
+        return {"count": 0, "ticks": []}
+    rows = [json.loads(line) for line in runtime.ticks_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = rows[-limit:]
+    history: list[dict[str, Any]] = []
+    for row in rows:
+        thought = row.get("summary") or row.get("last_tick_summary") or row.get("status")
+        executed: dict[str, Any] | None = None
+        if row.get("reply"):
+            executed = {
+                "type": "reply",
+                "backend": row.get("reply_backend"),
+                "message_id": row.get("message_id"),
+            }
+        elif row.get("action"):
+            action = row.get("action", {})
+            executed = {
+                "type": "action",
+                "kind": action.get("kind"),
+                "status": action.get("status"),
+                "action_id": action.get("action_id"),
+            }
+        elif row.get("proposal"):
+            proposal = row.get("proposal", {})
+            executed = {
+                "type": "capability_proposal",
+                "proposal_id": proposal.get("proposal_id"),
+                "gap_id": proposal.get("gap_id"),
+            }
+        elif row.get("review"):
+            review = row.get("review", {})
+            governance = review.get("governance", {})
+            proposal = governance.get("proposal", {})
+            executed = {
+                "type": "capability_review",
+                "proposal_id": proposal.get("proposal_id"),
+                "next_step": governance.get("next_step"),
+            }
+        elif row.get("execution"):
+            execution = row.get("execution", {})
+            executed = {
+                "type": "capability_execution",
+                "proposal_id": execution.get("proposal_id"),
+                "status": execution.get("status"),
+            }
+        elif row.get("status") == "idle":
+            executed = {"type": "idle"}
+
+        history.append(
+            {
+                "timestamp": row.get("timestamp"),
+                "status": row.get("status"),
+                "thought": thought,
+                "executed": executed,
+                "next_wake_at": row.get("next_wake_at"),
+            }
+        )
+    return {"count": len(rows), "ticks": history}
+
+
+def operator_show_metaagent_history(root: Path, *, limit: int = 20) -> dict[str, Any]:
+    history = load_metaagent_history(root, limit=limit)
+    success = sum(1 for row in history if row.get("success"))
+    failure = sum(1 for row in history if not row.get("success"))
+    return {"count": len(history), "success": success, "failure": failure, "runs": history}
 
 
 def operator_show_capability_gaps(root: Path) -> dict[str, Any]:
@@ -261,6 +333,22 @@ def operator_queue_action(
     runtime = _autonomy_runtime(root)
     spec = ActionSpec(kind=kind, inputs=inputs, risk_level=risk_level, backend=backend, goal=goal)
     return runtime.action_store.enqueue(spec)
+
+
+def operator_set_purpose(
+    root: Path,
+    *,
+    statement: str,
+    root_objectives: list[str] | None = None,
+    mutable: bool = True,
+) -> dict[str, Any]:
+    runtime = _autonomy_runtime(root)
+    purpose = runtime.update_purpose(
+        statement=statement,
+        root_objectives=root_objectives,
+        mutable=mutable,
+    )
+    return {"purpose": purpose, "status": "updated"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -312,8 +400,14 @@ def parse_args() -> argparse.Namespace:
 
     subparsers.add_parser("tick", help="Run one non-blocking autonomy tick")
     subparsers.add_parser("show-autonomy-state", help="Inspect autonomy runtime state")
+    subparsers.add_parser("show-autonomy-history", help="Inspect recent autonomy ticks")
+    subparsers.add_parser("show-metaagent-history", help="Inspect recent meta-repair runs")
+    dashboard_parser = subparsers.add_parser("dashboard", help="Serve a local P1 dashboard")
+    dashboard_parser.add_argument("--host", default="127.0.0.1")
+    dashboard_parser.add_argument("--port", type=int, default=8899)
     subparsers.add_parser("show-capability-gaps", help="Inspect recorded capability gaps")
     subparsers.add_parser("show-capability-tasks", help="Inspect bounded implementation tasks")
+    subparsers.add_parser("supervise", help="Run the P1 supervisor for dashboard and autonomy loop")
 
     queue_action_parser = subparsers.add_parser("queue-action", help="Queue an autonomy action")
     queue_action_parser.add_argument("--kind", required=True)
@@ -321,6 +415,27 @@ def parse_args() -> argparse.Namespace:
     queue_action_parser.add_argument("--risk-level", default="low")
     queue_action_parser.add_argument("--backend", default="local")
     queue_action_parser.add_argument("--goal")
+    purpose_parser = subparsers.add_parser("set-purpose", help="Update the master purpose in runtime state")
+    purpose_parser.add_argument("--statement", required=True)
+    purpose_parser.add_argument("--root-objectives", help="JSON array of root objectives")
+    purpose_parser.add_argument("--mutable", action=argparse.BooleanOptionalAction, default=True)
+
+    metaagent_parser = subparsers.add_parser("meta-repair", help="Run a minimal metaagent-style self-repair loop on a file")
+    metaagent_parser.add_argument("--target", required=True, help="Path to the file to repair")
+    metaagent_parser.add_argument("--model", default="qwen3-coder")
+    metaagent_parser.add_argument("--base-url", default="http://127.0.0.1:11434", help="Ollama-compatible model endpoint")
+    metaagent_parser.add_argument("--backend", choices=["ollama", "openclaw"], default="ollama")
+    metaagent_parser.add_argument("--openclaw-config-path", help="Path to ~/.openclaw/openclaw.json when using the openclaw backend")
+    metaagent_parser.add_argument("--timeout-seconds", type=float, default=60.0)
+    metaagent_parser.add_argument(
+        "--test-command",
+        help="JSON array command to validate the proposed change, e.g. [\"python3\",\"-m\",\"pytest\"]",
+    )
+    metaagent_parser.add_argument("--purpose", default="Make the workspace safer and more capable with the smallest possible change.")
+    metaagent_parser.add_argument(
+        "--constraints",
+        default="Keep the change minimal, preserve existing behavior, and prefer rollbackable edits.",
+    )
     return parser.parse_args()
 
 
@@ -352,6 +467,20 @@ def main() -> None:
         payload = operator_tick(root)
     elif args.subcommand == "show-autonomy-state":
         payload = operator_show_autonomy_state(root)
+    elif args.subcommand == "show-autonomy-history":
+        payload = operator_show_autonomy_history(root)
+    elif args.subcommand == "show-metaagent-history":
+        payload = operator_show_metaagent_history(root)
+    elif args.subcommand == "dashboard":
+        serve_dashboard(root, host=args.host, port=args.port)
+        return
+    elif args.subcommand == "supervise":
+        from pathlib import Path as _Path
+        import os as _os
+        import sys as _sys
+
+        supervisor = _Path(__file__).resolve().parent.parent / "scripts" / "p1_supervisor.py"
+        _os.execv(_sys.executable, [_sys.executable, "-u", str(supervisor)])
     elif args.subcommand == "show-capability-gaps":
         payload = operator_show_capability_gaps(root)
     elif args.subcommand == "show-capability-tasks":
@@ -365,6 +494,35 @@ def main() -> None:
             backend=args.backend,
             goal=args.goal,
         )
+    elif args.subcommand == "set-purpose":
+        root_objectives = json.loads(args.root_objectives) if args.root_objectives else None
+        payload = operator_set_purpose(
+            root,
+            statement=args.statement,
+            root_objectives=root_objectives,
+            mutable=args.mutable,
+        )
+    elif args.subcommand == "meta-repair":
+        test_command = json.loads(args.test_command) if args.test_command else None
+        agent = SelfRepairMetaAgent(
+            root=root,
+            model=args.model,
+            base_url=args.base_url,
+            backend=args.backend,
+            openclaw_config_path=Path(args.openclaw_config_path).expanduser() if args.openclaw_config_path else None,
+            test_command=test_command,
+            timeout_seconds=args.timeout_seconds,
+        )
+        result = agent.run(root / args.target, purpose=args.purpose, constraints=args.constraints)
+        payload = {
+            "target": result.target,
+            "model": result.model,
+            "success": result.success,
+            "message": result.message,
+            "backup_path": result.backup_path,
+            "test_stdout": result.test_stdout,
+            "test_stderr": result.test_stderr,
+        }
     else:
         payload = operator_rollback(root, target=args.target, snapshot_id=args.snapshot_id)
 
