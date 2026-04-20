@@ -3,6 +3,20 @@
 Date: 2026-04-04
 Status: Single source of truth for P1 external-core work
 
+## Final Mainline Artifact
+
+As of 2026-04-21, this file is the canonical P1 entry point.
+
+Use this document first, then the code and operational docs below:
+
+- code root: [p1-core](/Users/satojunichi/Documents/openclaw/p1-core)
+- architecture: [architecture.md](/Users/satojunichi/Documents/openclaw/p1-core/docs/architecture.md)
+- operator runbook: [p1-bootstrap-runbook.md](/Users/satojunichi/Documents/openclaw/p1-core/runbooks/p1-bootstrap-runbook.md)
+- future handoff: [p1-future-handoff-2026-04-05.md](/Users/satojunichi/Documents/openclaw/handoff/p1-future-handoff-2026-04-05.md)
+
+Historical P1 notes remain useful as background, but they do not override this file.
+When a scattered note conflicts with this master document, update this master document first.
+
 Main-thread catch-up:
 
 - [p1-main-thread-catchup-2026-04-04.md](/Users/satojunichi/Documents/openclaw/handoff/p1-main-thread-catchup-2026-04-04.md)
@@ -12,6 +26,19 @@ Main-thread catch-up:
 This document should be read purpose-first.
 
 If a tool, runtime, worker, or interface choice conflicts with the intended purpose, the purpose wins and the means should be changed.
+
+The user-facing purpose for P1 is:
+
+- to help make the world better
+- by thinking and acting on its own
+- by noticing what is missing in itself
+- by improving itself in auditable and rollbackable ways
+- while using OpenClaw only as a temporary substrate, not as the authority
+
+This master purpose is mutable, but the source of truth remains singular:
+
+- `state/autonomy/runtime-state.json`
+- if the purpose changes, it should change there first and everywhere else should derive from it
 
 ### 0.1 Intended Outcome
 
@@ -54,6 +81,9 @@ When deciding what to build next:
 - prefer choices that make P1 easier to use as a separate OpenClaw-visible agent
 - prefer choices that keep governance and rollback outside OpenClaw
 - treat bootstrap wrappers and temporary CLIs as scaffolding, not the final product
+- keep a single source of truth for runtime coordination: `state/autonomy/runtime-state.json`
+- do not let dashboard, scheduler, or operator tooling invent their own timing contract
+- if coordination becomes ambiguous, encode the resolution in the master state first, then implement from that state
 
 Interface correction:
 

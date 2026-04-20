@@ -21,6 +21,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertTrue((root / "agent" / "openclaw-agent.md").exists())
             self.assertTrue((root / "bin" / "p1").exists())
             self.assertTrue((root / "bin" / "p1-agent").exists())
+            self.assertTrue((root / "bin" / "p1-dashboard").exists())
             self.assertTrue((root / "bin" / "p1-worker").exists())
             self.assertTrue((root / "state" / "conversation").exists())
             self.assertTrue((root / "state" / "world").exists())

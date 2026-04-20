@@ -187,7 +187,7 @@ def operator_chat(root: Path, *, message: str, model: str) -> dict[str, Any]:
     return agent.reply(message)
 
 
-def _autonomy_runtime(root: Path) -> AutonomyRuntime:
+def _autonomy_runtime(root: Path, verification_mode: bool = False) -> AutonomyRuntime:
     config = _workspace_config(root)
     local_model = str(config.get("worker_model", "qwen3:4b-instruct"))
     openclaw_config = dict(config.get("openclaw_backend", {}))
@@ -211,23 +211,26 @@ def _autonomy_runtime(root: Path) -> AutonomyRuntime:
         openclaw_llm_backend=openclaw_llm_backend,
         openclaw_action_backend=openclaw_action_backend,
         worker_model=local_model,
+        verification_mode=verification_mode,
     )
 
 
-def operator_enqueue_message(root: Path, *, content: str, source: str = "user") -> dict[str, Any]:
-    return _autonomy_runtime(root).enqueue_message(content, source=source)
+def operator_enqueue_message(
+    root: Path, *, content: str, source: str = "user", verification_mode: bool = False
+) -> dict[str, Any]:
+    return _autonomy_runtime(root, verification_mode=verification_mode).enqueue_message(content, source=source)
 
 
-def operator_tick(root: Path) -> dict[str, Any]:
-    return _autonomy_runtime(root).tick_once()
+def operator_tick(root: Path, *, verification_mode: bool = False) -> dict[str, Any]:
+    return _autonomy_runtime(root, verification_mode=verification_mode).tick_once()
 
 
-def operator_show_autonomy_state(root: Path) -> dict[str, Any]:
-    return _autonomy_runtime(root).show_state()
+def operator_show_autonomy_state(root: Path, *, verification_mode: bool = False) -> dict[str, Any]:
+    return _autonomy_runtime(root, verification_mode=verification_mode).show_state()
 
 
-def operator_show_autonomy_history(root: Path, *, limit: int = 20) -> dict[str, Any]:
-    runtime = _autonomy_runtime(root)
+def operator_show_autonomy_history(root: Path, *, limit: int = 20, verification_mode: bool = False) -> dict[str, Any]:
+    runtime = _autonomy_runtime(root, verification_mode=verification_mode)
     if not runtime.ticks_path.exists():
         return {"count": 0, "ticks": []}
     rows = [json.loads(line) for line in runtime.ticks_path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -295,8 +298,8 @@ def operator_show_metaagent_history(root: Path, *, limit: int = 20) -> dict[str,
     return {"count": len(history), "success": success, "failure": failure, "runs": history}
 
 
-def operator_show_capability_gaps(root: Path) -> dict[str, Any]:
-    runtime = _autonomy_runtime(root)
+def operator_show_capability_gaps(root: Path, *, verification_mode: bool = False) -> dict[str, Any]:
+    runtime = _autonomy_runtime(root, verification_mode=verification_mode)
     return {
         "counts": runtime.capability_store.counts(),
         "gaps": runtime.capability_store.list_gaps(limit=20),
@@ -312,8 +315,8 @@ def operator_show_capability_gaps(root: Path) -> dict[str, Any]:
     }
 
 
-def operator_show_capability_tasks(root: Path) -> dict[str, Any]:
-    runtime = _autonomy_runtime(root)
+def operator_show_capability_tasks(root: Path, *, verification_mode: bool = False) -> dict[str, Any]:
+    runtime = _autonomy_runtime(root, verification_mode=verification_mode)
     return {
         "taskCounts": runtime.capability_task_store.counts(),
         "pendingTasks": runtime.capability_task_store.list_tasks(limit=20),
@@ -329,8 +332,9 @@ def operator_queue_action(
     risk_level: str = "low",
     backend: str = "local",
     goal: str | None = None,
+    verification_mode: bool = False,
 ) -> dict[str, Any]:
-    runtime = _autonomy_runtime(root)
+    runtime = _autonomy_runtime(root, verification_mode=verification_mode)
     spec = ActionSpec(kind=kind, inputs=inputs, risk_level=risk_level, backend=backend, goal=goal)
     return runtime.action_store.enqueue(spec)
 
@@ -341,8 +345,9 @@ def operator_set_purpose(
     statement: str,
     root_objectives: list[str] | None = None,
     mutable: bool = True,
+    verification_mode: bool = False,
 ) -> dict[str, Any]:
-    runtime = _autonomy_runtime(root)
+    runtime = _autonomy_runtime(root, verification_mode=verification_mode)
     purpose = runtime.update_purpose(
         statement=statement,
         root_objectives=root_objectives,
@@ -354,6 +359,7 @@ def operator_set_purpose(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Unified operator CLI for the P1 external core")
     parser.add_argument("--root", default="/Users/satojunichi/.openclaw/workspace/systems/p1")
+    parser.add_argument("--verification-mode", action="store_true", help="Enable verification mode (faster loops, reduced safety checks)")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
     ingest_parser = subparsers.add_parser("ingest", help="Run the growth loop on an input text")
@@ -461,17 +467,20 @@ def main() -> None:
         payload = operator_action(root, kind=args.kind, payload=args.payload, source=args.source)
     elif args.subcommand == "chat":
         payload = operator_chat(root, message=args.message, model=args.model)
+    elif args.subcommand == "metadata_update":
+        payload = {"status": "metadata_updated"}
     elif args.subcommand == "enqueue-message":
-        payload = operator_enqueue_message(root, content=args.content, source=args.source)
+        payload = operator_enqueue_message(root, content=args.content, source=args.source, verification_mode=args.verification_mode)
     elif args.subcommand == "tick":
-        payload = operator_tick(root)
+        payload = operator_tick(root, verification_mode=args.verification_mode)
     elif args.subcommand == "show-autonomy-state":
-        payload = operator_show_autonomy_state(root)
+        payload = operator_show_autonomy_state(root, verification_mode=args.verification_mode)
     elif args.subcommand == "show-autonomy-history":
-        payload = operator_show_autonomy_history(root)
+        payload = operator_show_autonomy_history(root, limit=20, verification_mode=args.verification_mode)
     elif args.subcommand == "show-metaagent-history":
         payload = operator_show_metaagent_history(root)
     elif args.subcommand == "dashboard":
+        # Note: dashboard serve logic might need verification_mode flag too if it calls runtime
         serve_dashboard(root, host=args.host, port=args.port)
         return
     elif args.subcommand == "supervise":
@@ -480,11 +489,14 @@ def main() -> None:
         import sys as _sys
 
         supervisor = _Path(__file__).resolve().parent.parent / "scripts" / "p1_supervisor.py"
-        _os.execv(_sys.executable, [_sys.executable, "-u", str(supervisor)])
+        env = _os.environ.copy()
+        if args.verification_mode:
+            env["P1_VERIFICATION_MODE"] = "1"
+        _os.execve(_sys.executable, [_sys.executable, "-u", str(supervisor)], env)
     elif args.subcommand == "show-capability-gaps":
-        payload = operator_show_capability_gaps(root)
+        payload = operator_show_capability_gaps(root, verification_mode=args.verification_mode)
     elif args.subcommand == "show-capability-tasks":
-        payload = operator_show_capability_tasks(root)
+        payload = operator_show_capability_tasks(root, verification_mode=args.verification_mode)
     elif args.subcommand == "queue-action":
         payload = operator_queue_action(
             root,
@@ -493,6 +505,7 @@ def main() -> None:
             risk_level=args.risk_level,
             backend=args.backend,
             goal=args.goal,
+            verification_mode=args.verification_mode,
         )
     elif args.subcommand == "set-purpose":
         root_objectives = json.loads(args.root_objectives) if args.root_objectives else None
@@ -501,6 +514,7 @@ def main() -> None:
             statement=args.statement,
             root_objectives=root_objectives,
             mutable=args.mutable,
+            verification_mode=args.verification_mode,
         )
     elif args.subcommand == "meta-repair":
         test_command = json.loads(args.test_command) if args.test_command else None

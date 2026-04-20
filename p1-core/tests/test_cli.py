@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from p1_core.cli import operator_action, operator_approvals, operator_enqueue_message, operator_ingest, operator_observe, operator_queue_action, operator_report, operator_run_background_job, operator_show_autonomy_state, operator_show_capability_gaps, operator_show_capability_tasks, operator_state, operator_status, operator_tick
+from p1_core.cli import operator_action, operator_approvals, operator_enqueue_message, operator_ingest, operator_observe, operator_queue_action, operator_report, operator_run_background_job, operator_set_purpose, operator_show_autonomy_history, operator_show_autonomy_state, operator_show_capability_gaps, operator_show_capability_tasks, operator_show_metaagent_history, operator_state, operator_status, operator_tick
 from p1_core.core.chat_agent import ChatAgent
 from p1_core.core.conversation_store import ConversationStore
 from p1_core.core.governance_store import GovernanceStore
@@ -107,6 +107,18 @@ class OperatorCliTests(unittest.TestCase):
             payload = operator_report(root, kind="health")
             self.assertEqual(payload["status"], "ok")
 
+    def test_operator_set_purpose_updates_runtime_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = operator_set_purpose(
+                root,
+                statement="I exist to help make the world better.",
+                root_objectives=["help make the world better"],
+                mutable=True,
+            )
+            self.assertEqual(payload["status"], "updated")
+            self.assertEqual(payload["purpose"]["statement"], "I exist to help make the world better.")
+
     def test_operator_observe_and_action_write_world_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -192,6 +204,83 @@ class OperatorCliTests(unittest.TestCase):
             self.assertEqual(payload["proposalCounts"]["total"], 0)
             self.assertIn("pendingTasks", payload)
             self.assertIn("allTasks", payload)
+
+    def test_operator_show_autonomy_history_summarizes_thought_and_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            from p1_core.autonomy import AutonomyRuntime
+
+            runtime = AutonomyRuntime(root=root, local_llm_backend=object())
+            runtime.ticks_path.parent.mkdir(parents=True, exist_ok=True)
+            runtime.ticks_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "timestamp": "2026-04-05T10:00:00+09:00",
+                                "status": "replied",
+                                "summary": "answered the inbox message",
+                                "reply": {"message_id": "msg-1"},
+                                "next_wake_at": "2026-04-05T10:05:00+09:00",
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            {
+                                "timestamp": "2026-04-05T10:05:00+09:00",
+                                "status": "action_executed",
+                                "last_tick_summary": "executed queued note action",
+                                "action": {"kind": "append_note", "status": "completed", "action_id": "action-1"},
+                                "next_wake_at": None,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            payload = operator_show_autonomy_history(root, limit=10)
+
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["ticks"][0]["thought"], "answered the inbox message")
+        self.assertEqual(payload["ticks"][0]["executed"]["type"], "reply")
+        self.assertEqual(payload["ticks"][1]["thought"], "executed queued note action")
+        self.assertEqual(payload["ticks"][1]["executed"]["type"], "action")
+        self.assertEqual(payload["ticks"][1]["executed"]["kind"], "append_note")
+        self.assertEqual(payload["ticks"][1]["next_wake_at"], None)
+
+    def test_operator_show_metaagent_history_summarizes_self_repair_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            history_path = root / "state" / "metaagent" / "generation_history.json"
+            history_path.parent.mkdir(parents=True, exist_ok=True)
+            history_path.write_text(
+                json.dumps(
+                    {
+                        "history": [
+                            {
+                                "timestamp": "2026-04-05T10:10:00+09:00",
+                                "target_name": "thought_policy.py",
+                                "message": "applied proposed file revision",
+                                "success": True,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            payload = operator_show_metaagent_history(root, limit=10)
+
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["success"], 1)
+        self.assertEqual(payload["failure"], 0)
+        self.assertEqual(payload["runs"][0]["target_name"], "thought_policy.py")
 
     def test_capability_gap_turns_into_proposal_on_next_tick(self) -> None:
         class FailingClient:

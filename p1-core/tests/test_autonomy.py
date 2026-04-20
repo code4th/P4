@@ -62,6 +62,18 @@ class AutonomyRuntimeTests(unittest.TestCase):
             result = runtime.tick_once()
 
             self.assertEqual(result["status"], "sleeping")
+            self.assertTrue(runtime.heartbeat_store.list_recent(limit=1))
+            self.assertIn("目的を確認した。", runtime.heartbeat_store.list_recent(limit=1)[0]["note"])
+            self.assertTrue(runtime.initiative_store.list_recent(limit=1))
+            initiative = runtime.initiative_store.list_recent(limit=1)[0]
+            self.assertIn("problem_statement", initiative["proposal"])
+            self.assertIn("diagnosis", initiative["proposal"])
+            self.assertGreaterEqual(len(initiative["proposal"]["candidates"]), 1)
+            self.assertIn("selected_candidate", initiative["proposal"])
+            self.assertIn("selection_reason", initiative["proposal"])
+            self.assertEqual(initiative["proposal"]["next_step"]["scope"], "internal")
+            self.assertEqual(initiative["proposal"]["purpose"], runtime.load_state()["purpose"]["statement"] + "\nroot_objectives: " + "; ".join(runtime.load_state()["purpose"]["root_objectives"]))
+            self.assertNotIn("friend", json.dumps(initiative, ensure_ascii=False).lower())
 
     def test_tick_executes_low_risk_queued_action(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -161,6 +173,48 @@ class AutonomyRuntimeTests(unittest.TestCase):
             self.assertIn("capabilityReviewCounts", payload)
             self.assertIn("capabilityExecutionCounts", payload)
             self.assertIn("llmUsage", payload)
+
+    def test_load_state_merges_purpose_into_existing_runtime_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+            runtime.runtime_state_path.parent.mkdir(parents=True, exist_ok=True)
+            runtime.runtime_state_path.write_text(
+                json.dumps({"mode": "cooperative_tick"}, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            state = runtime.load_state()
+
+            self.assertIn("purpose", state)
+            self.assertIn("help make the world better", state["purpose"]["statement"])
+            self.assertTrue(state["purpose"]["mutable"])
+
+    def test_update_purpose_allows_mutable_master_purpose(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+
+            purpose = runtime.update_purpose(
+                statement="I exist to support better outcomes through careful, reversible action.",
+                root_objectives=["support better outcomes", "stay reversible"],
+                mutable=True,
+            )
+
+            state = runtime.load_state()
+            self.assertEqual(purpose["statement"], "I exist to support better outcomes through careful, reversible action.")
+            self.assertEqual(state["purpose"]["statement"], purpose["statement"])
+            self.assertTrue(state["purpose"]["mutable"])
+
+    def test_load_state_has_single_source_of_truth_coordination(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime = AutonomyRuntime(root=root, local_llm_backend=FakeLocalBackend())
+            state = runtime.load_state()
+
+            self.assertIn("coordination", state)
+            self.assertEqual(state["coordination"]["source_of_truth"], "runtime-state.json")
+            self.assertEqual(state["coordination"]["single_writer"], "autonomy_runtime")
 
     def test_openclaw_action_without_backend_records_capability_gap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

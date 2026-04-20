@@ -37,7 +37,10 @@ def _latest_snapshot() -> dict[str, Any] | None:
 def _read_json(path: Path, fallback: Any) -> Any:
     if not path.exists():
         return fallback
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return fallback
 
 
 def _usage_total(usage: dict[str, Any], *, primary: str, alternate: str | None = None) -> int:
@@ -97,7 +100,13 @@ def dashboard_snapshot(root: Path, *, history_limit: int = 12) -> dict[str, Any]
     recent_ticks: list[dict[str, Any]] = []
     latest_row: dict[str, Any] = {}
     if history.exists():
-        rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines() if line.strip()]
+        rows = []
+        for line in history.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
         latest_row = rows[-1] if rows else {}
         for row in rows[-history_limit:]:
             executed: dict[str, Any] | None = None
@@ -141,27 +150,33 @@ def dashboard_snapshot(root: Path, *, history_limit: int = 12) -> dict[str, Any]
             elif row.get("growth_result"):
                 gr = row.get("growth_result", {})
                 executed = {
-                    "type": "growth_loop",
-                    "records_written": gr.get("records_written", 0),
-                    "proposals_written": gr.get("proposals_written", 0),
+                    "type": "自己成長",
+                    "summary": f"知識{gr.get('records_written', 0)}件 / 提案{gr.get('proposals_written', 0)}件",
                 }
             elif row.get("status") == "growth_loop_error":
-                executed = {
-                    "type": "growth_loop_error",
-                    "error": row.get("error", "unknown"),
-                }
+                executed = {"type": "成長ループエラー", "error": row.get("error", "不明")}
             elif row.get("status") == "idle":
-                executed = {"type": "idle"}
-            recent_ticks.append(
-                {
-                    "timestamp": row.get("timestamp"),
-                    "status": row.get("status"),
-                    "thought": row.get("summary") or row.get("last_tick_summary") or row.get("status"),
-                    "next_wake_at": row.get("next_wake_at"),
-                    "trigger_kind": _trigger_kind_for_row(row),
-                    "executed": executed,
-                }
-            )
+                executed = {"type": "待機"}
+            elif row.get("status") == "self_repair_failed":
+                executed = {"type": "自己修復失敗", "summary": row.get("metaagent_result", {}).get("message", "エラー")}
+            elif row.get("status") == "self_repair_completed":
+                executed = {"type": "自己修復完了", "summary": row.get("metaagent_result", {}).get("target", "ファイル更新")}
+
+            status_map = {
+                "idle": "待機中", "growth_loop_completed": "成長完了", "growth_loop_error": "成長エラー",
+                "self_repair_failed": "自己修復失敗", "self_repair_completed": "自己修復完了",
+                "replied": "回答済", "observed": "観測済", "decided": "決定済", "executed": "実行済",
+            }
+            display_status = status_map.get(row.get("status"), row.get("status"))
+
+            recent_ticks.append({
+                "timestamp": row.get("timestamp"),
+                "status": display_status,
+                "thought": row.get("summary") or row.get("last_tick_summary") or display_status,
+                "next_wake_at": row.get("next_wake_at"),
+                "trigger_kind": _trigger_kind_for_row(row),
+                "executed": executed,
+            })
         latest_initiative = latest_row.get("initiative") or {}
         latest_heartbeat = latest_row.get("heartbeat") or {}
         if not state.get("recentInitiatives") and latest_initiative:
@@ -171,87 +186,64 @@ def dashboard_snapshot(root: Path, *, history_limit: int = 12) -> dict[str, Any]
         if state.get("llmUsage") is None:
             state["llmUsage"] = _read_json(root / "state" / "budgets" / "llm-usage.json", {})
 
-    return {
-        "generated_at": datetime.now().isoformat(),
-        "root": str(root),
-        "state": state,
-        "history": recent_ticks,
-        "recent_reports": _read_json(root / "state" / "reports" / "daily" / "latest.json", {}),
-    }
-
-
-def _trigger_kind_for_row(row: dict[str, Any]) -> str:
-    if row.get("status") == "sleeping":
-        return "予定起床"
-    if row.get("reply"):
-        return "受信箱トリガー"
-    if row.get("action"):
-        return "アクショントリガー"
-    if row.get("proposal") or row.get("review") or row.get("execution"):
-        return "能力タスクトリガー"
-    if row.get("status") in {"growth_loop_completed", "growth_loop_error"}:
-        return "成長ループトリガー"
-    if row.get("status") in {"replied", "observed", "decided", "executed"}:
-        return "不定期トリガー"
-    return "不定期トリガー"
-
-
-def render_dashboard_html(snapshot: dict[str, Any]) -> str:
-    state = snapshot["state"]
-    history = snapshot["history"]
-    recent_gaps = state.get("recentCapabilityGaps", [])
-    recent_tasks = state.get("recentCapabilityTasks", [])
-    recent_conversation = state.get("recentConversation", [])
-    recent_heartbeats = state.get("recentHeartbeats", [])
-    recent_initiatives = state.get("recentInitiatives", [])
-    recent_metaagent_runs = state.get("recentMetaagentRuns", [])
-    llm_usage = state.get("llmUsage", {})
-    llm_local_calls = _usage_total(llm_usage, primary="local_daily", alternate="local")
-    llm_openclaw_calls = _usage_total(llm_usage, primary="openclaw_daily", alternate="openclaw")
-    llm_local_3h = _usage_total(llm_usage, primary="local_3h", alternate="local_window")
-    llm_openclaw_3h = _usage_total(llm_usage, primary="openclaw_3h", alternate="openclaw_window")
-    growth_state = state.get("growthLoopState", {})
-    knowledge_counts = state.get("knowledgeStateCounts", {})
-    knowledge_total = int(state.get("knowledgeRecordCount", 0))
-    growth_last_error = str(growth_state.get("last_error") or "")
-    growth_last_success = str(growth_state.get("last_success_at") or "なし")
-    growth_processed = int(growth_state.get("last_processed_index", 0))
-    total_ticks = len(history)
-    purpose = state.get("purpose", {})
-    coordination = state.get("coordination", {})
-    current_focus = escape(str(state.get("current_focus") or "idle"))
-    next_wake = escape(str(state.get("next_wake_at") or "none"))
-    mode = escape(str(state.get("mode") or "unknown"))
-    last_tick_summary = escape(str(state.get("last_tick_summary") or "none"))
     inbox_counts = state.get("inboxCounts", {})
     action_counts = state.get("actionCounts", {})
     task_counts = state.get("capabilityTaskCounts", {})
+
     quiet_reason = "P1は待機中です。いまは何もキューにありません。"
     if inbox_counts.get("queued", 0) > 0:
         quiet_reason = "P1は受信箱の仕事を待っています。"
     elif action_counts.get("queued", 0) > 0:
         quiet_reason = "P1はキュー済みのアクション実行を待っています。"
-    elif task_counts.get("pending", 0) > 0 or task_counts.get("in_progress", 0) > 0 or task_counts.get("deferred", 0) > 0:
+    elif task_counts.get("pending", 0) > 0 or task_counts.get("in_progress", 0) > 0:
         quiet_reason = "P1は能力タスクの進行待ちです。"
 
-    meaningful_history = [item for item in history if item.get("status") not in {"sleeping"}]
-    latest_meaningful = meaningful_history[-1] if meaningful_history else None
+    return {
+        "generated_at": datetime.now().isoformat(),
+        "root": str(root),
+        "state": state,
+        "history": recent_ticks,
+        "quiet_reason": quiet_reason,
+    }
+
+
+def _trigger_kind_for_row(row: dict[str, Any]) -> str:
+    status = row.get("status")
+    if status == "sleeping": return "予定起床"
+    if row.get("reply"): return "受信箱トリガー"
+    if row.get("action"): return "アクショントリガー"
+    if row.get("proposal") or row.get("review") or row.get("execution"): return "能力タスクトリガー"
+    if status in {"growth_loop_completed", "growth_loop_error"}: return "成長ループトリガー"
+    return "不定期トリガー"
+
+
+def render_dashboard_html(snapshot: dict[str, Any]) -> str:
+    state = snapshot.get("state", {})
+    history = snapshot.get("history", [])
+    recent_gaps = state.get("recentCapabilityGaps", [])
+    recent_tasks = state.get("recentCapabilityTasks", [])
+    recent_metaagent_runs = state.get("recentMetaagentRuns", [])
+    llm_usage = state.get("llmUsage", {})
+    llm_local_calls = _usage_total(llm_usage, primary="local_daily", alternate="local")
+
+    growth_state = state.get("growthLoopState", {})
+    knowledge_total = int(state.get("knowledgeRecordCount", 0))
+    growth_processed = int(growth_state.get("last_processed_index", 0))
+    purpose = state.get("purpose", {})
+    current_focus = escape(str(state.get("current_focus") or "待機中"))
+    next_wake_val = str(state.get("next_wake_at") or "なし")
+    next_wake = escape(next_wake_val)
+    mode = escape(str(state.get("mode") or "不明"))
+    generation = int(state.get("generation", 1))
+
+    quiet_reason = snapshot.get("quiet_reason", "不明")
+
+    meaningful_history = [item for item in history if item.get("status") not in {"sleeping", "待機中"}]
+    latest_meaningful = meaningful_history[-1] if meaningful_history else (history[-1] if history else None)
     latest_tick = history[-1] if history else None
-    wake_reason = "次の起床時刻はまだありません。"
-    if next_wake != "none":
-        wake_reason = "新しい仕事が来なければ、予定時刻に再起動します。"
-    latest_history = history[0] if history else None
-    latest_trigger = "予定起床"
-    if latest_meaningful:
-        latest_trigger = str(latest_meaningful.get("trigger_kind") or "不定期トリガー")
 
     def block(title: str, body: str) -> str:
-        return f"""
-        <section class="card">
-          <h2>{escape(title)}</h2>
-          {body}
-        </section>
-        """
+        return f"""<section class="card"><h2>{escape(title)}</h2>{body}</section>"""
 
     def pill(label: str, value: Any) -> str:
         return f'<span class="pill"><strong>{escape(label)}:</strong> {escape(str(value))}</span>'
@@ -259,535 +251,208 @@ def render_dashboard_html(snapshot: dict[str, Any]) -> str:
     history_rows = []
     for item in history:
         executed = item.get("executed")
-        executed_label = "none"
+        executed_label = "なし"
         if executed:
-            executed_type = executed.get("type")
-            if executed_type == "reply":
-                executed_label = f"reply via {executed.get('backend') or 'local'}"
-            elif executed_type == "action":
-                executed_label = f"action {executed.get('kind')} ({executed.get('status')})"
-            elif executed_type == "capability_proposal":
-                executed_label = f"proposal {executed.get('proposal_id')}"
-            elif executed_type == "capability_review":
-                executed_label = f"review {executed.get('proposal_id')}"
-            elif executed_type == "capability_execution":
-                executed_label = f"execution {executed.get('proposal_id')} ({executed.get('status')})"
-            elif executed_type == "growth_loop":
-                executed_label = f"成長ループ: {executed.get('records_written', 0)}件の知識 / {executed.get('proposals_written', 0)}件の提案"
-            elif executed_type == "growth_loop_error":
-                executed_label = f"成長ループエラー: {executed.get('error', 'unknown')}"
-            else:
-                executed_label = executed_type
+            etype = executed.get("type", "不明")
+            if etype == "reply": executed_label = f"回答 ({executed.get('backend') or 'local'})"
+            elif etype == "action": executed_label = f"アクション: {executed.get('kind')} ({executed.get('status')})"
+            elif etype == "自己修復完了": executed_label = f"修復完了: {executed.get('summary')}"
+            elif etype == "自己修復失敗": executed_label = f"修復失敗: {executed.get('summary')}"
+            else: executed_label = str(etype)
+
         history_rows.append(
-            f"""
-            <div class="row">
-              <div class="row-top">
-                <span>{escape(str(item.get('timestamp') or 'unknown'))}</span>
-                <span class="status">{escape(str(item.get('status') or 'unknown'))}</span>
-              </div>
-              <div class="row-body">
-                <div><strong>Thought:</strong> {escape(str(item.get('thought') or ''))}</div>
-                <div><strong>Executed:</strong> {escape(executed_label)}</div>
-                <div><strong>Next wake:</strong> {escape(str(item.get('next_wake_at') or 'none'))}</div>
-              </div>
-            </div>
-            """
+            f'<div class="row"><div class="row-top"><span>{escape(str(item.get("timestamp") or "不明"))}</span>'
+            f'<span class="status">{escape(str(item.get("status") or "不明"))}</span></div>'
+            f'<div class="row-body"><div><strong>思考:</strong> {escape(str(item.get("thought") or ""))}</div>'
+            f'<div><strong>実行:</strong> {escape(executed_label)}</div></div></div>'
         )
 
-    gap_rows = []
-    for gap in recent_gaps[:8]:
-        gap_rows.append(
-            f"<li><strong>{escape(str(gap.get('title') or gap.get('gap_id') or 'gap'))}</strong> "
-            f"<span>{escape(str(gap.get('source') or 'unknown'))}</span></li>"
-        )
-
-    task_rows = []
-    for task in recent_tasks[:8]:
-        task_rows.append(
-            f"<li><strong>{escape(str(task.get('title') or task.get('task_id') or 'task'))}</strong> "
-            f"<span>{escape(str(task.get('status') or 'unknown'))}</span></li>"
-        )
-
-    convo_rows = []
-    for msg in recent_conversation[-8:]:
-        convo_rows.append(
-            f"<li><strong>{escape(str(msg.get('role') or 'message'))}</strong>: {escape(str(msg.get('content') or ''))}</li>"
-        )
-
-    usage_rows = "".join(
-        f"<li><strong>{escape(str(k))}</strong>: {escape(str(v))}</li>" for k, v in sorted(llm_usage.items())
-    )
-    heartbeat_rows = []
-    for item in recent_heartbeats[-5:]:
-        heartbeat_rows.append(
-            f"<li><strong>{escape(str(item.get('timestamp') or 'unknown'))}</strong>: {escape(str(item.get('note') or ''))}</li>"
-        )
-    initiative_rows = []
-    for item in recent_initiatives[-5:]:
-        initiative_rows.append(
-            f"<li><strong>{escape(str(item.get('timestamp') or 'unknown'))}</strong>: {escape(str(item.get('note') or ''))}</li>"
-        )
-    history_html = "".join(history_rows) or '<div class="muted">まだ履歴はありません。</div>'
-    latest_meaningful_html = (
-        f"<div id='p1-latest-meaningful'><strong>{escape(str(latest_meaningful['timestamp']) if latest_meaningful else 'なし')}</strong></div><div class='muted'>{escape(str(latest_meaningful['thought']) if latest_meaningful else 'なし')}</div>"
-        if latest_meaningful
-        else '<div id="p1-latest-meaningful" class="muted">まだ意味のある tick はありません。</div>'
-    )
-    gaps_html = "<ul>" + "".join(gap_rows) + "</ul>" if gap_rows else '<div class="muted">ギャップはありません。</div>'
-    tasks_html = "<ul>" + "".join(task_rows) + "</ul>" if task_rows else '<div class="muted">タスクはありません。</div>'
-    conversation_html = "<ul>" + "".join(convo_rows) + "</ul>" if convo_rows else '<div class="muted">会話はありません。</div>'
-    usage_html = "<ul>" + usage_rows + "</ul>" if usage_rows else '<div class="muted">LLM 使用はまだありません。</div>'
-    heartbeat_html = "<ul>" + "".join(heartbeat_rows) + "</ul>" if heartbeat_rows else '<div class="muted">heartbeat はまだありません。</div>'
-    initiative_html = "<ul>" + "".join(initiative_rows) + "</ul>" if initiative_rows else '<div class="muted">initiative はまだありません。</div>'
     metaagent_rows = []
     for run in recent_metaagent_runs[-5:]:
-        change_preview = _metaagent_change_preview(run)
+        success_label = "成功" if run.get("success") else "失敗"
+        gen_label = f" (第 {run.get('generation')} 世代)" if run.get("generation") else ""
         metaagent_rows.append(
-            f"""
-            <li>
-              <strong>{escape(str(run.get('timestamp') or 'unknown'))}</strong>:
-              {escape('成功' if run.get('success') else '失敗')} /
-              {escape(str(run.get('target_name') or run.get('target') or 'unknown'))} /
-              {escape(str(run.get('message') or ''))}
-              <div class="muted">判断: {escape(str(run.get('purpose') or ''))}</div>
-              <div class="muted">制約: {escape(str(run.get('constraints') or ''))}</div>
-              <div class="muted">backend/model: {escape(str(run.get('backend') or 'unknown'))} / {escape(str(run.get('model') or 'unknown'))}</div>
-              <div class="muted">backup: {escape(str(run.get('backup_path') or 'なし'))}</div>
-              <pre class="diff">{escape(change_preview)}</pre>
-            </li>
-            """
+            f"<li><strong>{escape(str(run.get('timestamp') or '不明'))}</strong>: "
+            f"<span class='status'>[{escape(success_label)}{escape(gen_label)}]</span> "
+            f"<strong>目的:</strong> {escape(str(run.get('purpose') or '改善の適用'))}<br/>"
+            f"&nbsp;&nbsp;対象: {escape(str(run.get('target_name') or '不明'))} / 結果: {escape(str(run.get('message') or ''))}</li>"
         )
-    self_repair_html = "<ul>" + "".join(metaagent_rows) + "</ul>" if metaagent_rows else '<div class="muted">self-repair はまだありません。</div>'
-    latest_heartbeat = recent_heartbeats[-1] if recent_heartbeats else {}
-    latest_heartbeat_note = str(latest_heartbeat.get("note") or "heartbeat はまだありません。")
-    latest_heartbeat_reason = str(latest_heartbeat.get("reason") or "unknown")
-    latest_initiative = recent_initiatives[-1] if recent_initiatives else {}
-    latest_initiative_note = str(latest_initiative.get("note") or "initiative はまだありません。")
-    latest_initiative_reason = str(latest_initiative.get("reason") or "unknown")
-    latest_initiative_candidates = latest_initiative.get("proposal", {}).get("candidates", [])
-    latest_initiative_summary = str((latest_initiative.get("proposal") or {}).get("summary") or "initiative はまだありません。")
-    latest_initiative_next_step = str((latest_initiative.get("proposal") or {}).get("next_step") or "なし")
-    latest_initiative_selection_reason = str((latest_initiative.get("proposal") or {}).get("selection_reason") or "なし")
-    latest_initiative_problem = str((latest_initiative.get("proposal") or {}).get("problem_statement") or "なし")
-    latest_initiative_diagnosis = str((latest_initiative.get("proposal") or {}).get("diagnosis") or "なし")
-    latest_thought = str((latest_tick.get("thought") if latest_tick else "なし"))
-    latest_metaagent = recent_metaagent_runs[-1] if recent_metaagent_runs else {}
-    metaagent_recent_count = len(recent_metaagent_runs)
-    metaagent_success_count = sum(1 for row in recent_metaagent_runs if row.get("success"))
-    metaagent_failure_count = sum(1 for row in recent_metaagent_runs if not row.get("success"))
+
     report_lines = [
         f"目的: {str(purpose.get('statement') or '未設定')}",
-        f"現在状態: {str(state.get('last_tick_summary') or state.get('status') or '待機中')}",
-        f"最後の実行: {str(latest_meaningful['executed']['type']) if latest_meaningful and latest_meaningful.get('executed') else 'なし'}",
-        f"総 tick 数: {total_ticks}",
-        f"local LLM 回数: {llm_local_calls}",
-        f"OpenClaw LLM 回数: {llm_openclaw_calls}",
-        f"local LLM 3h: {llm_local_3h}",
-        f"OpenClaw LLM 3h: {llm_openclaw_3h}",
-        f"最後の heartbeat: {latest_heartbeat_note}",
-        f"heartbeat 理由: {latest_heartbeat_reason}",
-        f"最後の initiative: {latest_initiative_note}",
-        f"initiative 理由: {latest_initiative_reason}",
-        f"initiative 候補数: {len(latest_initiative_candidates)}",
-        f"initiative 要約: {latest_initiative_summary}",
-        f"initiative 問題: {latest_initiative_problem}",
-        f"initiative 診断: {latest_initiative_diagnosis}",
-        f"initiative 次手: {latest_initiative_next_step}",
-        f"initiative 選択理由: {latest_initiative_selection_reason}",
-        f"self-repair 回数: {metaagent_recent_count}",
-        f"self-repair 成功: {metaagent_success_count}",
-        f"self-repair 失敗: {metaagent_failure_count}",
-        f"self-repair 最新対象: {str(latest_metaagent.get('target_name') or latest_metaagent.get('target') or 'なし')}",
-        f"self-repair 最新結果: {str(latest_metaagent.get('message') or 'なし')}",
-        f"成長ループ処理済み: {growth_processed} 観察",
-        f"成長ループ最終成功: {growth_last_success}",
-        f"成長ループ最終エラー: {growth_last_error or 'なし'}",
-        f"知識レコード合計: {knowledge_total}",
-        f"知識状態: {', '.join(f'{k}={v}' for k, v in sorted(knowledge_counts.items())) if knowledge_counts else 'なし'}",
-        f"最近の思考: {latest_thought}",
-        f"次の起床: {str(next_wake)}",
+        f"現在の注目: {current_focus}",
+        f" tick 総数: {len(history)}",
+        f"LLM 利用(local): {llm_local_calls} 回",
+        f"知識レコード: {knowledge_total} 件",
+        f"成長ループ進捗: {growth_processed} 件",
     ]
     report_html = "".join(f"<li>{escape(line)}</li>" for line in report_lines)
 
+    initiative = state.get("recentInitiatives", [])[-1] if state.get("recentInitiatives") else {}
+    prop = initiative.get("proposal", {})
+
     return f"""<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>P1 ダッシュボード</title>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>P1 ダッシュボード</title>
   <style>
-    :root {{
-      --bg: #0b1020;
-      --panel: #111833;
-      --panel-2: #172043;
-      --text: #e7ecff;
-      --muted: #9aa7d1;
-      --accent: #72a1ff;
-      --accent-2: #7bf0c8;
-      --danger: #ff8a8a;
-      --border: rgba(255,255,255,0.08);
-    }}
-    body {{
-      margin: 0;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
-      background: radial-gradient(circle at top, #18224d 0%, var(--bg) 50%);
-      color: var(--text);
-    }}
-    header {{
-      padding: 24px 28px 8px;
-      border-bottom: 1px solid var(--border);
-      background: rgba(0,0,0,0.18);
-      backdrop-filter: blur(10px);
-      position: sticky;
-      top: 0;
-    }}
-    h1 {{
-      margin: 0 0 8px;
-      font-size: 28px;
-    }}
-    .sub {{
-      color: var(--muted);
-      font-size: 14px;
-    }}
-    .subline {{
-      margin-top: 6px;
-      color: var(--muted);
-      font-size: 13px;
-    }}
-    .hero {{
-      display: grid;
-      gap: 10px;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      padding: 16px 24px 0;
-    }}
-    .hero-card {{
-      background: rgba(255,255,255,0.05);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 12px 14px;
-    }}
-    .hero-card .label {{
-      color: var(--muted);
-      font-size: 12px;
-      margin-bottom: 4px;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }}
-    .hero-card .value {{
-      font-size: 18px;
-      font-weight: 700;
-      line-height: 1.3;
-    }}
-    .callout {{
-      margin: 16px 24px 0;
-      padding: 14px 16px;
-      border-radius: 14px;
-      border: 1px solid rgba(123, 240, 200, 0.22);
-      background: rgba(123, 240, 200, 0.08);
-      color: var(--text);
-      line-height: 1.5;
-    }}
-    .countdown {{
-      font-size: 22px;
-      font-weight: 800;
-      color: var(--accent-2);
-      letter-spacing: 0.02em;
-    }}
-    .trigger {{
-      color: var(--accent);
-      font-weight: 800;
-    }}
-    .wrap {{
-      padding: 20px 24px 40px;
-      display: grid;
-      gap: 16px;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    }}
-    .card {{
-      background: linear-gradient(180deg, var(--panel), var(--panel-2));
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 16px;
-      box-shadow: 0 8px 30px rgba(0,0,0,0.22);
-    }}
-    .card h2 {{
-      margin: 0 0 12px;
-      font-size: 16px;
-    }}
-    .meta {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-bottom: 12px;
-    }}
-    .pill {{
-      display: inline-flex;
-      gap: 6px;
-      padding: 6px 10px;
-      border-radius: 999px;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid var(--border);
-      color: var(--text);
-      font-size: 13px;
-    }}
-    .row {{
-      padding: 10px 0;
-      border-top: 1px solid var(--border);
-    }}
-    .row:first-child {{
-      border-top: none;
-      padding-top: 0;
-    }}
-    .row-top {{
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      color: var(--muted);
-      font-size: 12px;
-      margin-bottom: 6px;
-    }}
-    .status {{
-      color: var(--accent-2);
-      font-weight: 700;
-    }}
-    ul {{
-      margin: 0;
-      padding-left: 18px;
-    }}
-    li {{
-      margin: 6px 0;
-    }}
-    strong {{
-      color: var(--text);
-    }}
-    .wide {{
-      grid-column: 1 / -1;
-    }}
-    .muted {{
-      color: var(--muted);
-    }}
-    .diff {{
-      white-space: pre-wrap;
-      word-break: break-word;
-      margin: 8px 0 0;
-      padding: 10px;
-      border-radius: 12px;
-      background: rgba(0,0,0,0.22);
-      border: 1px solid var(--border);
-      color: #dce6ff;
-      font-size: 12px;
-      line-height: 1.45;
-    }}
-    code {{
-      background: rgba(255,255,255,0.08);
-      padding: 2px 6px;
-      border-radius: 6px;
-    }}
+    :root {{ --bg: #0b1020; --panel: #111833; --text: #e7ecff; --accent: #72a1ff; --accent-2: #7bf0c8; --border: rgba(255,255,255,0.08); }}
+    body {{ margin: 0; font-family: sans-serif; background: var(--bg); color: var(--text); padding-bottom: 50px; }}
+    header {{ padding: 20px; border-bottom: 1px solid var(--border); background: rgba(0,0,0,0.2); position: sticky; top: 0; z-index: 10; }}
+    h1 {{ margin: 0 0 10px; font-size: 24px; color: var(--accent); }}
+    .meta {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+    .pill {{ padding: 4px 10px; border-radius: 20px; background: rgba(255,255,255,0.05); border: 1px solid var(--border); font-size: 12px; }}
+    .hero {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; padding: 20px; }}
+    .hero-card {{ background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 15px; }}
+    .label {{ font-size: 11px; color: #8a96bc; text-transform: uppercase; margin-bottom: 5px; }}
+    .value {{ font-size: 18px; font-weight: bold; }}
+    .countdown {{ font-size: 20px; color: var(--accent-2); font-weight: bold; }}
+    .wrap {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; padding: 20px; }}
+    .card {{ background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 15px; }}
+    .card h2 {{ margin: 0 0 12px; font-size: 16px; border-left: 3px solid var(--accent); padding-left: 10px; }}
+    .row {{ padding: 10px 0; border-top: 1px solid var(--border); }}
+    .row-top {{ display: flex; justify-content: space-between; font-size: 11px; color: #8a96bc; margin-bottom: 4px; }}
+    .status {{ color: var(--accent-2); font-weight: bold; }}
+    .callout {{ margin: 0 20px; padding: 15px; background: rgba(123, 240, 200, 0.05); border: 1px solid rgba(123, 240, 200, 0.2); border-radius: 12px; }}
   </style>
 </head>
 <body>
   <header>
-    <h1>P1 Dashboard</h1>
-    <div class="sub">OpenClaw は土台、P1 本体は external core。ローカル優先の自律運用。生成時刻 {escape(snapshot["generated_at"])}</div>
-    <div class="subline">画面は P1 の通知で更新します。手動リロードでも最新を表示できます。起床までの残り時間だけは毎秒更新します。</div>
-    <div class="subline">P1 の目的: {escape(str(purpose.get("statement") or "未設定"))}</div>
-    <div class="subline">coordination の出所: {escape(str(coordination.get("source_of_truth") or "runtime-state.json"))}</div>
-    <div class="meta">
+    <h1>P1 Dashboard (Japanese)</h1>
+    <div class="meta" id="v-meta-pills">
+      {pill("世代", generation)}
       {pill("モード", mode)}
       {pill("注目", current_focus)}
       {pill("次回起床", next_wake)}
-      {pill("直近の要約", last_tick_summary)}
-      {pill("local LLM", llm_local_calls)}
-      {pill("OpenClaw LLM", llm_openclaw_calls)}
-      {pill("self-repair", metaagent_recent_count)}
-      {pill("待機アクション", state.get("actionCounts", {}).get("queued", 0))}
-      {pill("未処理タスク", state.get("capabilityTaskCounts", {}).get("pending", 0))}
-      {pill("知識レコード", knowledge_total)}
-      {pill("成長ループ処理済", growth_processed)}
+      {pill("知識ベース", knowledge_total)}
     </div>
   </header>
-  {block("P1 の進行報告", f"<ul>{report_html}</ul>")}
-  <section class="hero">
-    <div class="hero-card">
-      <div class="label">今の状態</div>
-      <div class="value" id="p1-current-status">{escape(str(state.get("status") or state.get("last_tick_summary") or "待機中"))}</div>
-    </div>
-    <div class="hero-card">
-      <div class="label">静かな理由</div>
-      <div class="value" id="p1-quiet-reason">{escape(quiet_reason)}</div>
-    </div>
-    <div class="hero-card">
-      <div class="label">最後に考えたこと</div>
-      <div class="value" id="p1-last-thought">{escape(latest_thought)}</div>
-    </div>
-    <div class="hero-card">
-      <div class="label">最後の実行</div>
-      <div class="value" id="p1-last-execution">{escape(str(latest_meaningful["executed"]["type"]) if latest_meaningful and latest_meaningful.get("executed") else "なし")}</div>
-    </div>
-    <div class="hero-card">
-      <div class="label">起床まで</div>
-      <div class="countdown" id="p1-countdown">{escape(next_wake)}</div>
-    </div>
-    <div class="hero-card">
-      <div class="label">トリガー種別</div>
-      <div class="value trigger" id="p1-trigger-kind">{escape(str(latest_trigger))}</div>
-    </div>
-  </section>
-  <div class="callout" id="p1-callout">
-    <strong>直近の実行:</strong> {escape(str(latest_tick["executed"]["type"]) if latest_tick and latest_tick.get("executed") else "なし")}<br />
-    <strong>静かに見える理由:</strong> {escape(quiet_reason)}<br />
-    <strong>起床計画:</strong> {escape(wake_reason)}<br />
-    <strong>実績:</strong> tick {escape(str(total_ticks))} 回 / local LLM {escape(str(llm_local_calls))} 回 / OpenClaw LLM {escape(str(llm_openclaw_calls))} 回<br />
-    <strong>考えた候補:</strong> {escape(str(len(latest_initiative_candidates)))} 個<br />
-    <strong>最後の initiative:</strong> {escape(latest_initiative_summary)}<br />
-    <strong>問題:</strong> {escape(latest_initiative_problem)}<br />
-    <strong>診断:</strong> {escape(latest_initiative_diagnosis)}<br />
-    <strong>次の一手:</strong> {escape(latest_initiative_next_step)}<br />
-    <strong>選択理由:</strong> {escape(latest_initiative_selection_reason)}<br />
-    <strong>読み取り:</strong> 今は止まっているのではなく、保守的に待機しつつ内部候補を残しています。
+
+  <div class="hero">
+    <div class="hero-card"><div class="label">ステータス</div><div class="value" id="v-status">{escape(str(state.get("status") or "待機中"))}</div></div>
+    <div class="hero-card"><div class="label">静かな理由</div><div class="value" id="v-quiet-reason">{escape(quiet_reason)}</div></div>
+    <div class="hero-card"><div class="label">起床まで</div><div class="countdown" id="p1-countdown">{escape(next_wake)}</div></div>
   </div>
+
+  <div class="callout">
+    <strong>直近の思考:</strong> <span id="v-thought">{escape(str(latest_tick.get("thought") if latest_tick else "なし"))}</span><br/>
+    <strong>次の一手:</strong> <span id="v-next-step">{escape(str(prop.get("next_step") or "なし"))}</span><br/>
+    <strong>自己判断:</strong> <span id="v-judgment">{escape(str(prop.get("summary") or "なし"))}</span>
+  </div>
+
   <main class="wrap">
-    {block("自律履歴", f'<div id="p1-history">{history_html}</div>')}
-    {block("最後の意味ある tick", latest_meaningful_html)}
-    {block("最近の能力ギャップ", f'<div id="p1-gaps">{gaps_html}</div>')}
-    {block("最近の能力タスク", f'<div id="p1-tasks">{tasks_html}</div>')}
-    {block("最近の会話", f'<div id="p1-conversation">{conversation_html}</div>')}
-    {block("最近の heartbeat", f'<div id="p1-heartbeat">{heartbeat_html}</div>')}
-    {block("最近の initiative", f'<div id="p1-initiative">{initiative_html}</div>')}
-    {block("最近の self-repair", f'<div id="p1-metaagent">{self_repair_html}</div>')}
-    {block("成長ループ (Growth Loop)", f'''<div id="p1-growth">
-      <ul>
-        <li><strong>処理済み観察数:</strong> {escape(str(growth_processed))}</li>
-        <li><strong>最後の成功:</strong> {escape(growth_last_success)}</li>
-        <li><strong>最後のエラー:</strong> {escape(growth_last_error) if growth_last_error else "なし"}</li>
-      </ul>
-      <h3 style="margin-top:12px;font-size:14px;">知識ストア</h3>
-      <ul>
-        <li><strong>合計レコード:</strong> {escape(str(knowledge_total))}</li>
-        {"".join(f'<li><strong>{escape(str(k))}:</strong> {escape(str(v))}</li>' for k, v in sorted(knowledge_counts.items())) if knowledge_counts else '<li class="muted">まだ知識レコードがありません。</li>'}
-      </ul>
-    </div>''')}
-    {block("LLM 使用量", f'<div id="p1-usage">{usage_html}</div>')}
+    {block("概要", f'<ul id="v-summary">{report_html}</ul>')}
+    {block("自律履歴", f'<div id="v-history">{"".join(history_rows) or "なし"}</div>')}
+    {block("自己修復履歴", f"<ul id='v-meta-history'>{''.join(metaagent_rows) or '<li>なし</li>'}</ul>")}
   </main>
+
   <script>
-    let latestSnapshot = {json.dumps(snapshot, ensure_ascii=False)};
     const eventSource = new EventSource("/api/events");
+    let latestSnapshot = {json.dumps(snapshot, ensure_ascii=False)};
 
-    function formatCountdown(value) {{
-      if (!value || value === "none") return "なし";
-      const target = new Date(value);
-      if (Number.isNaN(target.getTime())) return "なし";
-      const delta = target.getTime() - Date.now();
-      if (delta <= 0) {{
-        return "P1通知待ち";
-      }}
-      const totalSeconds = Math.floor(delta / 1000);
-      const hours = Math.floor(totalSeconds / 3600);
-      const minutes = Math.floor((totalSeconds % 3600) / 60);
-      const seconds = totalSeconds % 60;
-      const parts = [];
-      if (hours > 0) parts.push(`${{hours}}時間`);
-      if (minutes > 0 || hours > 0) parts.push(`${{minutes}}分`);
-      parts.push(`${{seconds}}秒`);
-      return parts.join("");
+    function formatCountdown(targetStr) {{
+      if (!targetStr || targetStr === "なし") return "なし";
+      const target = new Date(targetStr);
+      const diff = target.getTime() - Date.now();
+      if (diff <= 0) return "起床中";
+      const s = Math.floor(diff / 1000);
+      const m = Math.floor(s / 60);
+      return `${{m}}分 ${{s % 60}}秒`;
     }}
 
-    function renderTick(item) {{
-      const executed = item.executed;
-      let executedLabel = "なし";
-      if (executed) {{
-        if (executed.type === "reply") executedLabel = `reply via ${{executed.backend || "local"}}`;
-        else if (executed.type === "action") executedLabel = `action ${{executed.kind}} (${{executed.status}})`;
-        else if (executed.type === "capability_proposal") executedLabel = `proposal ${{executed.proposal_id}}`;
-        else if (executed.type === "capability_review") executedLabel = `review ${{executed.proposal_id}}`;
-        else if (executed.type === "capability_execution") executedLabel = `execution ${{executed.proposal_id}} (${{executed.status}})`;
-        else if (executed.type === "growth_loop") executedLabel = `成長ループ: ${{executed.records_written}}件の知識 / ${{executed.proposals_written}}件の提案`;
-        else if (executed.type === "growth_loop_error") executedLabel = `成長ループエラー: ${{executed.error}}`;
-        else executedLabel = executed.type;
+    function updateDOM(snap) {{
+      const st = snap.state || {{}};
+      const hist = snap.history || [];
+      const latest = hist[hist.length - 1] || {{}};
+      const metaHist = st.recentMetaagentRuns || [];
+
+      document.getElementById("v-status").textContent = st.status || "待機中";
+      document.getElementById("v-thought").textContent = latest.thought || "なし";
+      document.getElementById("v-quiet-reason").textContent = snap.quiet_reason || "待機中 (キューにタスクがありません)";
+
+      const initiatives = st.recentInitiatives || [];
+      const init = initiatives[initiatives.length - 1] || {{}};
+      const prop = init.proposal || {{}};
+      const _txt = (val) => (typeof val === 'object' ? JSON.stringify(val) : (val || "なし"));
+      document.getElementById("v-next-step").textContent = _txt(prop.next_step);
+      document.getElementById("v-judgment").textContent = _txt(prop.summary);
+
+      const vHistory = document.getElementById("v-history");
+      const vMeta = document.getElementById("v-meta-history");
+      const vMetaPills = document.getElementById("v-meta-pills");
+
+      if (vMetaPills) {{
+        const gen = st.generation || 1;
+        const mode = st.mode || "不明";
+        const focus = st.current_focus || "待機中";
+        let wakeText = "なし";
+        if (st.next_wake_at) {{
+          const dt = new Date(st.next_wake_at).getTime() - Date.now();
+          if (dt > 0) {{
+            wakeText = 'あと ' + Math.ceil(dt / 1000) + ' 秒';
+          }} else {{
+            wakeText = '起床中...';
+          }}
+        }}
+        const total = st.knowledgeRecordCount || 0;
+
+        vMetaPills.innerHTML = `
+          <span class="pill"><strong>世代:</strong> ${{gen}}</span>
+          <span class="pill"><strong>モード:</strong> ${{mode}}</span>
+          <span class="pill"><strong>注目:</strong> ${{focus}}</span>
+          <span class="pill"><strong>次回起床:</strong> ${{wakeText}}</span>
+          <span class="pill"><strong>知識ベース:</strong> ${{total}}</span>`;
       }}
-      return `
-        <div class="row">
-          <div class="row-top">
-            <span>${{item.timestamp || "unknown"}}</span>
-            <span class="status">${{item.status || "unknown"}}</span>
-          </div>
-          <div class="row-body">
-            <div><strong>思考:</strong> ${{item.thought || ""}}</div>
-            <div><strong>実行:</strong> ${{executedLabel}}</div>
-            <div><strong>トリガー:</strong> ${{item.trigger_kind || "不定期トリガー"}}</div>
-            <div><strong>次回起床:</strong> ${{item.next_wake_at || "なし"}}</div>
-          </div>
-        </div>
-      `;
+
+      if (vHistory && hist.length > 0) {{
+        vHistory.innerHTML = hist.map(item => {{
+          const exec = item.executed || {{}};
+          let label = "なし";
+          if (exec.type === "reply") label = `回答 (${{exec.backend || 'local'}})`
+          else if (exec.type === "action") label = `アクション: ${{exec.kind}} (${{exec.status}})`
+          else if (exec.type === "自己修復完了") label = `修復完了: ${{exec.summary}}`
+          else if (exec.type === "自己修復失敗") label = `修復失敗: ${{exec.summary}}`
+          else if (exec.type) label = String(exec.type);
+
+          return `
+            <div class="row">
+              <div class="row-top">
+                <span>${{item.timestamp || "不明"}}</span>
+                <span class="status">${{item.status || "不明"}}</span>
+              </div>
+              <div class="row-body">
+                <div><strong>思考:</strong> ${{item.thought || ""}}</div>
+                <div><strong>実行:</strong> ${{label}}</div>
+              </div>
+            </div>`;
+        }}).join("");
+      }}
+
+      if (vMeta && metaHist.length > 0) {{
+        vMeta.innerHTML = metaHist.slice(-5).map(run => {{
+          const successLabel = run.success ? '成功' : '失敗';
+          const genLabel = run.generation ? ` (第 ${{run.generation}} 世代)` : '';
+          return `
+            <li><strong>${{run.timestamp || '不明'}}</strong>:
+            <span class="status">[${{successLabel}}${{genLabel}}]</span>
+            <strong>目的:</strong> ${{run.purpose || '改善の適用'}}<br/>
+            &nbsp;&nbsp;対象: ${{run.target_name || '不明'}} / 結果: ${{run.message || ''}}</li>`;
+        }}).join("");
+      }}
     }}
 
-    function renderList(selector, rows, emptyText) {{
-      const el = document.querySelector(selector);
-      if (!el) return;
-      el.innerHTML = rows.length ? `<ul>${{rows.join("")}}</ul>` : `<div class="muted">${{emptyText}}</div>`;
-    }}
-
-    function applySnapshot(snapshot) {{
-      latestSnapshot = snapshot;
-      const state = snapshot.state || {{}};
-      const history = snapshot.history || [];
-      const meaningful = history.find((item) => item.status !== "sleeping") || history[0] || null;
-      const latest = history[history.length - 1] || null;
-      document.getElementById("p1-current-status").textContent = state.status || state.last_tick_summary || "待機中";
-      document.getElementById("p1-quiet-reason").textContent = state.inboxCounts?.queued > 0
-        ? "P1は受信箱の仕事を待っています。"
-        : state.actionCounts?.queued > 0
-        ? "P1はキュー済みのアクション実行を待っています。"
-        : (state.capabilityTaskCounts?.pending > 0 || state.capabilityTaskCounts?.in_progress > 0 || state.capabilityTaskCounts?.deferred > 0)
-        ? "P1は能力タスクの進行待ちです。"
-        : "P1は待機中です。いまは何もキューにありません。";
-      document.getElementById("p1-last-thought").textContent = meaningful ? (meaningful.thought || "なし") : "なし";
-      document.getElementById("p1-last-execution").textContent = meaningful && meaningful.executed ? (meaningful.executed.type || "なし") : "なし";
-      document.getElementById("p1-trigger-kind").textContent = meaningful ? (meaningful.trigger_kind || "不定期トリガー") : "予定起床";
-      document.getElementById("p1-countdown").textContent = formatCountdown(state.next_wake_at);
-      const latestMeaningful = document.getElementById("p1-latest-meaningful");
-      if (latestMeaningful) {{
-        latestMeaningful.innerHTML = meaningful
-          ? `<strong>${{meaningful.timestamp || "なし"}}</strong><div class="muted">${{meaningful.thought || "なし"}}</div>`
-          : '<div class="muted">まだ意味のある tick はありません。</div>';
-      }}
-      const callout = document.getElementById("p1-callout");
-      if (callout) {{
-        callout.innerHTML = `
-          <strong>直近の実行:</strong> ${{latest && latest.executed ? latest.executed.type : "なし"}}<br />
-          <strong>静かに見える理由:</strong> ${{document.getElementById("p1-quiet-reason").textContent}}<br />
-          <strong>起床計画:</strong> ${{state.next_wake_at ? "次の P1 通知を待っています。" : "次の起床時刻はまだありません。"}}<br />
-          <strong>実績:</strong> tick ${{history.length}} 回 / local LLM ${{usage.local_daily ?? usage.local ?? 0}} 回 / OpenClaw LLM ${{usage.openclaw_daily ?? usage.openclaw ?? 0}} 回<br />
-          <strong>考えた候補:</strong> ${{(state.recentInitiatives || []).slice(-1)[0]?.proposal?.candidates?.length || 0}} 個<br />
-          <strong>最後の initiative:</strong> ${{(state.recentInitiatives || []).slice(-1)[0]?.proposal?.summary || "initiative はまだありません。"}}<br />
-          <strong>問題:</strong> ${{(state.recentInitiatives || []).slice(-1)[0]?.proposal?.problem_statement || "なし"}}<br />
-          <strong>診断:</strong> ${{(state.recentInitiatives || []).slice(-1)[0]?.proposal?.diagnosis || "なし"}}<br />
-          <strong>次の一手:</strong> ${{(state.recentInitiatives || []).slice(-1)[0]?.proposal?.next_step || "なし"}}<br />
-          <strong>選択理由:</strong> ${{(state.recentInitiatives || []).slice(-1)[0]?.proposal?.selection_reason || "なし"}}<br />
-          <strong>読み取り:</strong> 今は止まっているのではなく、保守的に待機しつつ内部候補を残しています。
-        `;
-      }}
-      renderList("#p1-history", history.map(renderTick), "まだ履歴はありません。");
-      renderList("#p1-gaps", (state.recentCapabilityGaps || []).slice(0, 8).map((gap) => `<li><strong>${{gap.title || gap.gap_id || "gap"}}</strong> <span>${{gap.source || "unknown"}}</span></li>`), "ギャップはありません。");
-      renderList("#p1-tasks", (state.recentCapabilityTasks || []).slice(0, 8).map((task) => `<li><strong>${{task.title || task.task_id || "task"}}</strong> <span>${{task.status || "unknown"}}</span></li>`), "タスクはありません。");
-      renderList("#p1-conversation", (state.recentConversation || []).slice(-8).map((msg) => `<li><strong>${{msg.role || "message"}}</strong>: ${{msg.content || ""}}</li>`), "会話はありません。");
-      renderList("#p1-metaagent", (state.recentMetaagentRuns || []).slice(-8).map((run) => `<li><strong>${{run.timestamp || "unknown"}}</strong>: ${{run.success ? "成功" : "失敗"}} / ${{run.target_name || run.target || "unknown"}} / ${{run.message || ""}}</li>`), "self-repair はまだありません。");
-      const usage = state.llmUsage || {{}};
-      renderList("#p1-usage", Object.keys(usage).sort().map((key) => `<li><strong>${{key}}</strong>: ${{usage[key]}}</li>`), "LLM 使用はまだありません。");
-    }}
-
-    applySnapshot(latestSnapshot);
-    eventSource.addEventListener("snapshot", (event) => {{
-      try {{
-        applySnapshot(JSON.parse(event.data));
-      }} catch (error) {{
-        console.error("failed to apply snapshot", error);
-      }}
+    eventSource.addEventListener("snapshot", (e) => {{
+      latestSnapshot = JSON.parse(e.data);
+      updateDOM(latestSnapshot);
     }});
-    eventSource.addEventListener("ping", () => {{}});
+
     setInterval(() => {{
-      const nextWake = latestSnapshot?.state?.next_wake_at;
-      document.getElementById("p1-countdown").textContent = formatCountdown(nextWake);
+      const el = document.getElementById("p1-countdown");
+      if (el) {{
+        const wake = latestSnapshot.state ? latestSnapshot.state.next_wake_at : null;
+        el.textContent = formatCountdown(wake);
+      }}
     }}, 1000);
   </script>
 </body>
@@ -841,51 +506,14 @@ class _DashboardHandler(BaseHTTPRequestHandler):
                             continue
                         last_seen = _EVENT_SEQUENCE
                         current = _LATEST_SNAPSHOT
-                    if current is None:
-                        continue
+                    if current is None: continue
                     body = json.dumps(current, ensure_ascii=False).encode("utf-8")
-                    self.wfile.write(b"event: snapshot\n")
-                    self.wfile.write(b"data: ")
+                    self.wfile.write(b"event: snapshot\ndata: ")
                     self.wfile.write(body)
                     self.wfile.write(b"\n\n")
                     self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError, OSError):
                 return
-        if self.path == "/api/notify":
-            self.send_error(405, "method not allowed")
-            return
-        self.send_error(404, "not found")
-
-    def do_HEAD(self) -> None:  # noqa: N802
-        if self.path.startswith("/api/health"):
-            body = _health_body()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            return
-        snapshot = dashboard_snapshot(self.root)
-        if self.path in {"/", "/index.html"}:
-            body = render_dashboard_html(snapshot).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            return
-        if self.path.startswith("/api/snapshot"):
-            body = json.dumps(snapshot, ensure_ascii=False, indent=2).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            return
-        if self.path.startswith("/api/events"):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "keep-alive")
-            self.end_headers()
-            return
         self.send_error(404, "not found")
 
     def do_POST(self) -> None:  # noqa: N802
@@ -921,11 +549,8 @@ def serve_dashboard(root: Path, *, host: str = "127.0.0.1", port: int = 8899) ->
     else:
         runtime_state = {}
     coordination = dict(runtime_state.get("coordination", {}))
-    coordination.setdefault("source_of_truth", "runtime-state.json")
     coordination["dashboard_notify_url"] = f"http://{host}:{port}/api/notify"
     coordination["dashboard_health_url"] = f"http://{host}:{port}/api/health"
-    coordination.setdefault("update_policy", "push_on_tick")
-    coordination.setdefault("single_writer", "autonomy_runtime")
     runtime_state["coordination"] = coordination
     runtime_state_path.parent.mkdir(parents=True, exist_ok=True)
     runtime_state_path.write_text(json.dumps(runtime_state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -933,22 +558,10 @@ def serve_dashboard(root: Path, *, host: str = "127.0.0.1", port: int = 8899) ->
     url = f"http://{host}:{port}"
     try:
         server = ThreadingHTTPServer((host, port), handler)
-    except OSError as exc:
-        if exc.errno == errno.EADDRINUSE:
-            print(f"P1 dashboard already running at {url}", flush=True)
-            try:
-                webbrowser.open(url)
-            except Exception:
-                pass
-            return
+    except OSError:
         raise
     print(f"P1 dashboard serving at {url}", flush=True)
-    snapshot = dashboard_snapshot(root)
-    _set_latest_snapshot(snapshot)
-    try:
-        webbrowser.open(url)
-    except Exception:
-        pass
+    _set_latest_snapshot(dashboard_snapshot(root))
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:

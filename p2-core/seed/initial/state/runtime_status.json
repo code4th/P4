@@ -1,0 +1,44 @@
+{
+  "status": "idle",
+  "active_loop_run_id": null,
+  "current_candidate_id": null,
+  "current_task_stack": null,
+  "current_focus": null,
+  "current_observations": {
+    "target_file_contents": {}
+  },
+  "recent_tool_results": [],
+  "recent_validation_results": {},
+  "recent_diffs": {},
+  "working_memory": {
+    "local_working_memory": {}
+  },
+  "child_return_payloads": [],
+  "current_runtime_kernel": null,
+  "current_action": null,
+  "current_action_step": null,
+  "goal_reset_pending": false,
+  "goal_reset_at": null,
+  "goal_reset_required_first_actions": [
+    "read_file",
+    "search_code"
+  ],
+  "goal_preflight": {},
+  "phase": null,
+  "phase_started_at": null,
+  "last_output_at": null,
+  "current_stream_path": null,
+  "model": null,
+  "thinking_model": null,
+  "coding_model": null,
+  "exploratory_coding_model": null,
+  "stagnation_coding_model": null,
+  "last_loop_started_at": null,
+  "last_loop_finished_at": null,
+  "last_error": null,
+  "last_event": "workspace_bootstrapped",
+  "dashboard_notify_url": null,
+  "dashboard_health_url": null,
+  "worker_heartbeat_at": null,
+  "updated_at": "2026-04-16T15:35:23.510505+00:00"
+}

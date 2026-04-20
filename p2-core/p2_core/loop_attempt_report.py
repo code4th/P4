@@ -1,0 +1,60 @@
+from __future__ import annotations
+
+from typing import Any
+
+from p2_core.workspace import WorkspacePaths
+
+
+def _build_attempt_report(
+    *,
+    candidate_id: str,
+    loop_run_id: str,
+    parent_generation: int,
+    candidate_generation: int,
+    target_file: str,
+    clone_reason: str,
+    purpose: str,
+    runtime_kernel: str,
+    meta_diagnosis: dict[str, Any],
+    created_at: str,
+    paths: WorkspacePaths,
+    goal_id: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "candidate_id": candidate_id,
+        "goal_id": goal_id,
+        "loop_run_id": loop_run_id,
+        "parent_generation": parent_generation,
+        "candidate_generation": candidate_generation,
+        "target_file": target_file,
+        "clone_reason": clone_reason,
+        "status": "started",
+        "purpose": purpose,
+        "reasoning_summary": None,
+        "situation_report": None,
+        "pre_edit_reflection": None,
+        "post_edit_reflection": None,
+        "self_memo": None,
+        "persisted_memo_id": None,
+        "raw_model_output_path": str(paths.raw_model_output_path(candidate_id)),
+        "diff_path": str(paths.diff_path(candidate_id)),
+        "stream_log_path": str(paths.stream_log_path(candidate_id)),
+        "session_events_path": str(paths.session_events_path(candidate_id)),
+        "prompt_snapshots_path": str(paths.prompt_snapshots_path(candidate_id)),
+        "change_summary": None,
+        "validation_report_path": str(paths.validation_report_path(candidate_id)),
+        "retry_validation_report_path": str(paths.validation_report_path(candidate_id, retry=True)),
+        "created_at": created_at,
+        "decision_reason": None,
+        "promoted_version_id": None,
+        "runtime_kernel": runtime_kernel,
+        "meta_diagnosis": meta_diagnosis,
+        "reference_index": None,
+        "selected_context": None,
+        "resolved_context": None,
+        "delta_context": None,
+        "task_frame": None,
+        "task_stack": [],
+        "frame_trace": [],
+        "llm_timings": {},
+    }

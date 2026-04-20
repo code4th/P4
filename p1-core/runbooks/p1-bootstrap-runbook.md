@@ -28,6 +28,7 @@ Create a reproducible P1 workspace without relying on internal OpenClaw agent cr
    - `python3 -m p1_core.cli enqueue-message --content "hello P1"`
    - `python3 -m p1_core.cli tick`
    - `python3 -m p1_core.cli show-autonomy-state`
+   - `python3 -m p1_core.cli dashboard --port 8899`
    - `python3 -m p1_core.cli show-capability-gaps`
    - `python3 -m p1_core.cli queue-action --kind append_note --inputs '{"content":"autonomy note"}'`
    - `python3 -m p1_core.cli ingest --model qwen3:4b-instruct --input-text "example observation"`

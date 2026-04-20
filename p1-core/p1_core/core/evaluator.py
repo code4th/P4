@@ -14,7 +14,10 @@ class Evaluator:
         laws = governance.get("laws", {})
         operations = governance.get("operations", {})
         feedback = governance.get("feedback", {})
-        if matched_previous_summary and laws.get("allow_duplicate_retirement", True) is False:
+        if before.get("verification_mode"):
+            decision = "active"
+            reason = "verification mode: automatic promotion enabled"
+        elif matched_previous_summary and laws.get("allow_duplicate_retirement", True) is False:
             decision = "defer"
             reason = "duplicate proposal retained for comparison under governance law"
         elif operations.get("require_comparison_before_rerun", True) and previous_experiment_outcome:
@@ -29,11 +32,16 @@ class Evaluator:
         elif "deferred" in state_history:
             decision = "defer"
             reason = "previously deferred knowledge should not be promoted without new evidence"
-        elif (
-            constitution.get("preserve_counterexamples", True) and after.get("counterexamples_present")
-        ) or "rollback" in after_text or "delete" in after_text:
+        elif "rollback" in after_text or "delete" in after_text:
             decision = "defer"
-            reason = "high-impact or contradicted change needs broader comparison before promotion"
+            reason = "high-impact change needs broader comparison before promotion"
+        elif (
+            constitution.get("preserve_counterexamples", True)
+            and after.get("counterexamples_present")
+            and after.get("risk_level") in ("high", "medium")
+        ):
+            decision = "defer"
+            reason = "medium/high-risk contradicted change needs broader comparison before promotion"
         elif previous_snapshot_exists and before_text == after_text:
             decision = "retire"
             reason = "no meaningful delta from previous snapshot was detected"

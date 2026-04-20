@@ -1,0 +1,68 @@
+{
+  "editable_zones": [
+    "agent/goal_logic.py"
+  ],
+  "editable_zone_specs": [
+    {
+      "zone_id": "agent_goal_logic",
+      "path": "agent/goal_logic.py",
+      "scope": "workspace_candidate",
+      "edit_mode": "full_file",
+      "selection_enabled": true,
+      "description": "候補 workspace 内の本体ロジック。従来どおり自己改善の主対象。"
+    },
+    {
+      "zone_id": "operator_runtime_loop",
+      "path": "p2_core/loop.py",
+      "scope": "operator_runtime",
+      "edit_mode": "restricted_regions",
+      "selection_enabled": false,
+      "description": "runtime 側の認知環境。段階開放として prompt/working memory/delta_context 更新まわりだけを編集対象にする。",
+      "allowed_regions": [
+        "session_action_prompt_building",
+        "reference_selection_prompt_building",
+        "reflection_prompt_building",
+        "delta_context_update",
+        "working_memory_summarization"
+      ]
+    }
+  ],
+  "immutable_paths": [
+    "tests/"
+  ],
+  "runtime_kernel": "legacy_phase_loop_v1",
+  "available_runtime_kernels": [
+    "legacy_phase_loop_v1",
+    "session_action_loop_v1"
+  ],
+  "capabilities": [
+    "single_file_full_replacement",
+    "candidate_validation",
+    "promotion",
+    "reset_to_initial_state",
+    "dashboard_notification",
+    "history_aware_meta_diagnosis",
+    "meta_search_mode_switching",
+    "system_skill_lookup",
+    "self_memo_lookup",
+    "self_memo_writeback",
+    "session_action_loop_v1",
+    "event_sourced_action_log",
+    "structured_patch_edits"
+  ],
+  "default_validation_command": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests"
+  ],
+  "default_model": "qwen3-coder:latest",
+  "default_thinking_model": "gemma4:26b",
+  "default_coding_model": "qwen3-coder:latest",
+  "default_exploratory_coding_model": "devstral:latest",
+  "default_stagnation_coding_model": "gemma4:26b",
+  "max_frame_depth": 3,
+  "max_action_steps": 8
+}

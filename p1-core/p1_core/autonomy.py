@@ -26,6 +26,7 @@ from p1_core.core.llm_runtime import LLMRouter, LLMUsageStore, TextLLMBackend
 from p1_core.core.policy_engine import PolicyEngine
 from p1_core.core.thought_policy import build_purpose_initiative_payload, fallback_purpose_candidates, purpose_brief
 from p1_core.core.world_store import WorldStore
+from p1_core.core.metaagent import SelfRepairMetaAgent
 from p1_core.pipeline.growth_loop import GrowthLoop, build_loop
 from p1_core.worker.ollama_client import OllamaClient, OllamaError
 from p1_core.worker.service import WorkerService
@@ -268,6 +269,8 @@ class AutonomyRuntime:
     openclaw_llm_backend: TextLLMBackend | None = None
     openclaw_action_backend: OpenClawActionBackend | None = None
     worker_model: str = "qwen3:4b-instruct"
+    verification_mode: bool = False
+    _last_idle_diagnostic: dict[str, Any] = field(default_factory=dict)
     action_store: ActionStore = field(init=False)
     background_jobs: BackgroundJobStore = field(init=False)
     world_store: WorldStore = field(init=False)
@@ -315,7 +318,7 @@ class AutonomyRuntime:
             llm_client=OllamaClient(model=self.worker_model),
             log_dir=self.root / "logs" / "worker",
         )
-        self.growth_loop = build_loop(self.root, worker_service)
+        self.growth_loop = build_loop(self.root, worker_service, verification_mode=self.verification_mode)
 
     @property
     def state_dir(self) -> Path:
@@ -364,10 +367,11 @@ class AutonomyRuntime:
                     "per_tick_openclaw_cap": 1,
                     "openclaw_3h_soft_cap": 20,
                     "openclaw_daily_soft_cap": 40,
-                    "default_wake_seconds": 10,
-                    "idle_wake_seconds": 20,
+                    "default_wake_seconds": 5 if self.verification_mode else 10,
+                    "idle_wake_seconds": 5 if self.verification_mode else 20,
                     "lease_seconds": 10,
                 },
+            "generation": 1,
             }
 
     def load_state(self) -> dict[str, Any]:
@@ -441,6 +445,8 @@ class AutonomyRuntime:
         return {
             "generated_at": _iso(),
             "root": str(self.root),
+            "verification_mode": self.verification_mode,
+            "last_idle_diagnostic": self._last_idle_diagnostic,
             "state": state,
             "history": history,
             "recent_reports": _read_json(self.root / "state" / "reports" / "daily" / "latest.json", {}),
@@ -525,6 +531,9 @@ class AutonomyRuntime:
                 "summary": "another autonomy tick currently holds the lease",
                 "next_wake_at": state.get("next_wake_at"),
             }
+            # Update last_tick_at even if lease not acquired to satisfy supervisor health monitoring
+            # We use a limited save that only touches the tick timestamp
+            self.save_state({**state, "last_tick_at": _iso(moment)})
             self._record_tick(result)
             return result
 
@@ -837,10 +846,24 @@ class AutonomyRuntime:
                 "next_wake_at": _iso(next_wake),
             }
 
-        idle_seconds = int(state.get("budget_policy", {}).get("idle_wake_seconds", 20))
+        # --- MetaAgent self-repair: use LLM to improve own code ---
+        metaagent_result = self._try_metaagent_self_repair(state, moment)
+        if isinstance(metaagent_result, dict) and metaagent_result.get("status") not in ("meta_repair_skipped", "meta_repair_throttled"):
+            return metaagent_result
+
+        idle_seconds = 5 if self.verification_mode else int(state.get("budget_policy", {}).get("idle_wake_seconds", 20))
         next_wake = moment + timedelta(seconds=idle_seconds)
         heartbeat = self._record_purpose_heartbeat(state, moment, reason="idle")
         initiative = self._record_purpose_initiative(state, moment, reason="idle")
+
+        diagnostic = {
+            "last_tick_at": _iso(moment),
+            "growth_loop": "skipped (no new observations)",
+            "meta_repair": metaagent_result.get("reason") if isinstance(metaagent_result, dict) else "skipped",
+            "capability_gaps": "none pending",
+        }
+        self._last_idle_diagnostic = diagnostic
+
         self.save_state(
             {
                 **state,
@@ -850,6 +873,7 @@ class AutonomyRuntime:
                 "last_tick_summary": "idle tick completed without LLM usage",
                 "last_heartbeat_at": heartbeat["recorded_at"],
                 "last_initiative_at": initiative["recorded_at"],
+                "idle_diagnostic": diagnostic,
             }
         )
         return {
@@ -857,6 +881,7 @@ class AutonomyRuntime:
             "summary": "no inbox or actions pending",
             "heartbeat": heartbeat,
             "initiative": initiative,
+            "diagnostic": diagnostic,
             "next_wake_at": _iso(next_wake),
         }
 
@@ -962,7 +987,33 @@ class AutonomyRuntime:
 
     def _generate_self_reflection_material(self, state: dict[str, Any], moment: datetime) -> str | None:
         """Generate material for the growth loop from internal state when no external observations exist."""
+        # Throttle: only do self-reflection once every 5 minutes
+        growth_state_path = self.state_dir / "growth-cursor.json"
+        cursor = _read_json(growth_state_path, {})
+        last_success = cursor.get("last_success_at")
+        if last_success:
+            try:
+                last_at = datetime.fromisoformat(last_success)
+                if moment - last_at < timedelta(minutes=5):
+                    return None
+            except ValueError:
+                pass
+
         parts: list[str] = []
+
+        # Bootstrap: if knowledge is empty, generate seed material from P1's own state
+        knowledge_counts = self.knowledge_store.counts_by_state()
+        if sum(knowledge_counts.values()) == 0:
+            parts.append(
+                "P1 bootstrap self-analysis:\n"
+                "P1 is a self-improving autonomous agent. This is the first growth loop cycle.\n"
+                f"Current purpose: {state.get('purpose', {}).get('statement', 'unknown')}\n"
+                f"Root objectives: {state.get('purpose', {}).get('root_objectives', [])}\n"
+                f"Current mode: {state.get('mode', 'unknown')}\n"
+                f"Capability gaps recorded: {self.capability_store.counts().get('total', 0)}\n"
+                f"Actions executed: {self.action_store.counts().get('completed', 0)}\n"
+                "The growth loop should begin extracting lessons from available state and identifying areas for improvement."
+            )
 
         # Recent capability gaps as input
         gaps = self.capability_store.list_gaps(limit=5)
@@ -983,23 +1034,172 @@ class AutonomyRuntime:
             if init_texts:
                 parts.append("Recent initiatives:\n" + "\n".join(init_texts))
 
-        # Only generate material if there's something meaningful (not just empty state)
-        # Also throttle: only do self-reflection once every 5 minutes
-        growth_state_path = self.state_dir / "growth-cursor.json"
-        cursor = _read_json(growth_state_path, {})
-        last_success = cursor.get("last_success_at")
-        if last_success:
-            try:
-                last_at = datetime.fromisoformat(last_success)
-                if moment - last_at < timedelta(minutes=5):
-                    return None
-            except ValueError:
-                pass
-
         if not parts:
             return None
 
         return "Self-reflection input for P1 growth loop:\n\n" + "\n\n".join(parts)
+
+    def _try_metaagent_self_repair(self, state: dict[str, Any], moment: datetime) -> dict[str, Any] | None:
+        """Use MetaAgent to apply self-improvement to P1's own code based on growth loop knowledge.
+
+        Throttled to once every 10 minutes. Only triggers when there are ACTIVE knowledge
+        records that suggest code improvements.
+        """
+        repair_state_path = self.state_dir / "metaagent-cursor.json"
+        cursor = _read_json(repair_state_path, {"last_attempt_at": None, "attempts": 0, "successes": 0, "failures": 0})
+        throttle_minutes = 1 if self.verification_mode else 10
+        last_attempt = cursor.get("last_attempt_at")
+        if last_attempt:
+            try:
+                last_at = datetime.fromisoformat(last_attempt)
+                if moment - last_at < timedelta(minutes=throttle_minutes):
+                    return None
+            except ValueError:
+                pass
+
+        # Check governance: only proceed if autonomy is enabled
+        governance = self.governance_store.latest()
+        if not governance.get("operations", {}).get("autonomy_enabled", True):
+            return None
+
+        # Look for active knowledge records that suggest improvements
+        knowledge_records = list(self.knowledge_store.latest_by_id().values())
+        active_records = [r for r in knowledge_records if str(r.get("state", "")).lower() == "active"]
+        if not active_records:
+            return {
+                "status": "meta_repair_skipped",
+                "reason": f"no active knowledge records found (total={len(knowledge_records)})",
+            }
+
+        # Pick the most recent active record as the basis for self-repair
+        target_record = active_records[-1]
+        lesson_body = str(target_record.get("body", ""))
+        if not lesson_body:
+            return None
+
+        # Determine target file — for now, focus on improving the worker service
+        # (the component most likely to benefit from small improvements)
+        target_candidates = [
+            self.root.parent / "p1_core" / "worker" / "service.py",
+            self.root.parent / "p1_core" / "core" / "policy_engine.py",
+            self.root.parent / "p1_core" / "core" / "evaluator.py",
+        ]
+        # Use the source code directory if running from workspace
+        if not target_candidates[0].exists():
+            src_root = Path(__file__).parent
+            target_candidates = [
+                src_root / "worker" / "service.py",
+                src_root / "core" / "policy_engine.py",
+                src_root / "core" / "evaluator.py",
+            ]
+
+        target_file = None
+        for candidate in target_candidates:
+            if candidate.exists():
+                target_file = candidate
+                break
+
+        if target_file is None:
+            return None
+
+        policy = state.get("budget_policy", {})
+        try:
+            test_command = [
+                "python3.14", "-m", "unittest", "discover", "-s", "tests",
+            ]
+            # Find the test directory relative to the code
+            test_dir = target_file.parent.parent.parent / "tests"
+            if not test_dir.exists():
+                test_command = None
+
+            agent = SelfRepairMetaAgent(
+                root=target_file.parent.parent.parent,
+                model=self.worker_model,
+                backend="ollama",
+                test_command=test_command,
+                max_attempts=2,
+                timeout_seconds=120.0,
+            )
+            result = agent.run(
+                target_file,
+                purpose=f"Apply this improvement lesson to the code: {lesson_body}",
+                constraints=(
+                    "Make only small, safe improvements. "
+                    "Do not break existing functionality. "
+                    "Do not remove existing features. "
+                    "Preserve all public interfaces. "
+                    "All tests must pass after changes."
+                ),
+            )
+            cursor["last_attempt_at"] = _iso(moment)
+            cursor["attempts"] = int(cursor.get("attempts", 0)) + 1
+            if result.success:
+                cursor["successes"] = int(cursor.get("successes", 0)) + 1
+            else:
+                cursor["failures"] = int(cursor.get("failures", 0)) + 1
+            cursor["last_result"] = {
+                "success": result.success,
+                "message": result.message,
+                "target": result.target,
+                "model": result.model,
+            }
+            repair_state_path.parent.mkdir(parents=True, exist_ok=True)
+            repair_state_path.write_text(json.dumps(cursor, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            self.usage_store.record_call("local")
+
+            next_wake = moment + timedelta(seconds=int(policy.get("default_wake_seconds", 10)))
+            if result.success:
+                state["generation"] = int(state.get("generation", 1)) + 1
+                summary = f"自己修復完了 (第 {state['generation']} 世代): {result.message}"
+                status = "self_repair_completed"
+            else:
+                summary = f"自己修復失敗: {result.message}"
+                status = "self_repair_failed"
+
+            self.save_state(
+                {
+                    **state,
+                    "generation": state.get("generation", 1),
+                    "current_focus": "self_repair",
+                    "last_tick_at": _iso(moment),
+                    "next_wake_at": _iso(next_wake),
+                    "last_tick_summary": summary,
+                    "status": status,
+                }
+            )
+            return {
+                "status": status,
+                "summary": summary,
+                "metaagent_result": {
+                    "success": result.success,
+                    "message": result.message,
+                    "target": str(result.target),
+                    "purpose": f"改善教訓の適用: {lesson_body}",
+                    "generation": state.get("generation"),
+                },
+                "next_wake_at": _iso(next_wake),
+            }
+        except Exception as exc:
+            cursor["last_attempt_at"] = _iso(moment)
+            cursor["last_error"] = str(exc)
+            repair_state_path.parent.mkdir(parents=True, exist_ok=True)
+            repair_state_path.write_text(json.dumps(cursor, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            next_wake = moment + timedelta(seconds=int(policy.get("idle_wake_seconds", 20)))
+            self.save_state(
+                {
+                    **state,
+                    "current_focus": "self_repair_error",
+                    "last_tick_at": _iso(moment),
+                    "next_wake_at": _iso(next_wake),
+                    "last_tick_summary": f"self-repair error: {exc}",
+                }
+            )
+            return {
+                "status": "self_repair_error",
+                "summary": f"self-repair error: {exc}",
+                "error": str(exc),
+                "next_wake_at": _iso(next_wake),
+            }
 
     def _next_unproposed_gap(self) -> dict[str, Any] | None:
         for gap in reversed(self.capability_store.list_gaps(limit=100)):

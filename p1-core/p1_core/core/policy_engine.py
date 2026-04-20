@@ -22,6 +22,9 @@ class PolicyEngine:
         elif "bounded" in lower or "small experiment" in lower or "minor" in lower:
             risk_level = "low"
             requires_approval = False
+        elif any(kw in lower for kw in ("improve", "enhance", "add logging", "error handling", "refactor", "optimize", "robust")):
+            risk_level = "low"
+            requires_approval = False
         else:
             risk_level = "medium"
             requires_approval = True

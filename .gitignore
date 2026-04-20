@@ -1,7 +1,24 @@
 .DS_Store
 
+__pycache__/
+*.py[cod]
+*.log
+
 reviewer-agent/
 
 social-agent/.openclaw/
 social-agent/memory/
 social-agent/reports/hourly/
+
+p1-core/logs/
+p1-core/state/
+p2-core/logs/
+p2-core/state/
+p2-core/.tmp-*.js
+p2-core/runtime/candidates/
+p3-core/logs/
+p3-core/dashboard.log
+p3-core/debug.py
+
+maze_gen.py
+result.txt

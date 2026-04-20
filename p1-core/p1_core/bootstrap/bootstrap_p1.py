@@ -40,9 +40,9 @@ TEMPLATES = {
             "per_tick_openclaw_cap": 1,
             "openclaw_3h_soft_cap": 20,
             "openclaw_daily_soft_cap": 40,
-            "default_wake_seconds": 300,
-            "idle_wake_seconds": 900,
-            "lease_seconds": 120,
+            "default_wake_seconds": 10,
+            "idle_wake_seconds": 20,
+            "lease_seconds": 10,
         },
     },
     "agent/manifest.json": {
@@ -113,6 +113,16 @@ REPO_ROOT="/Users/satojunichi/Documents/openclaw/p1-core"
 
 export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 exec python3 -m p1_core.cli --root "$ROOT_DIR" "$@"
+"""
+
+BIN_P1_DASHBOARD_TEMPLATE = """#!/bin/sh
+set -eu
+
+ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="/Users/satojunichi/Documents/openclaw/p1-core"
+
+export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m p1_core.cli --root "$ROOT_DIR" dashboard "$@"
 """
 
 BIN_P1_AGENT_TEMPLATE = """#!/bin/sh
@@ -201,6 +211,12 @@ def scaffold_workspace(root: Path, force: bool = False) -> list[Path]:
         bin_p1_path.write_text(BIN_P1_TEMPLATE, encoding="utf-8")
         bin_p1_path.chmod(0o755)
         created.append(bin_p1_path)
+
+    bin_p1_dashboard_path = root / "bin" / "p1-dashboard"
+    if not bin_p1_dashboard_path.exists() or force:
+        bin_p1_dashboard_path.write_text(BIN_P1_DASHBOARD_TEMPLATE, encoding="utf-8")
+        bin_p1_dashboard_path.chmod(0o755)
+        created.append(bin_p1_dashboard_path)
 
     bin_p1_agent_path = root / "bin" / "p1-agent"
     if not bin_p1_agent_path.exists() or force:

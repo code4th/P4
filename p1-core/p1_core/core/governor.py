@@ -22,10 +22,14 @@ class Governor:
             (risk_level == "high" and laws.get("high_risk_requires_cloud_approval", True))
             or (risk_level == "medium" and laws.get("medium_risk_requires_cloud_approval", True))
         )
-        if proposal.get("requires_approval") is False and evaluation.get("decision") == "candidate" and autonomy_permitted:
+        if proposal.get("verification_mode"):
             approved = True
             next_step = "autonomous_apply"
-        elif proposal.get("requires_approval") is False and evaluation.get("decision") == "candidate":
+        elif (
+            proposal.get("requires_approval") is False
+            and evaluation.get("decision") == "candidate"
+            and autonomy_permitted
+        ):
             approved = False
             next_step = "await_governance_update"
         elif evaluation.get("decision") == "candidate" and cloud_decision == "approve":

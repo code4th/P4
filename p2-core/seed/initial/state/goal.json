@@ -1,0 +1,37 @@
+{
+  "goal_id": "goal-continuous-self-improvement",
+  "text": "自己改善ループを継続し、エージェント本体の可観測性、堅牢性、運用者向け説明、自己診断能力を少しずつ高め続けること。",
+  "acceptance": {
+    "command": [
+      "python3",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "tests"
+    ],
+    "description": "エージェント本体の自己チェックとユニットテストが成功すること。",
+    "contract": [
+      "describe_agent() が主要な説明フィールドを返す",
+      "render_operator_message() が自己改善中であることを示す",
+      "self_check() が 0 を返す",
+      "python3 agent/goal_logic.py --check が成功する"
+    ]
+  },
+  "status": "active",
+  "created_at": "2026-04-16T15:35:23.509672+00:00",
+  "last_attempt_at": null,
+  "satisfied_at": null,
+  "mode": "continuous_self_improvement",
+  "cycle_count": 0,
+  "focus_areas": [
+    "可観測性を上げる",
+    "失敗時の説明を分かりやすくする",
+    "自己診断を強くする",
+    "運用者向けの出力を整える",
+    "保守しやすい構造にする"
+  ],
+  "next_focus_index": 0,
+  "last_promoted_candidate_id": null,
+  "last_promoted_at": null
+}

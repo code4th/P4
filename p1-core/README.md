@@ -17,6 +17,7 @@ Included in this first skeleton:
 - minimal growth loop that persists candidate knowledge and proposal snapshots
 - minimal conversation surface and transcript store
 - world observation and bounded action request stores
+- local dashboard for inspecting autonomy history, tasks, and gaps
 - minimal external core package layout
 - OpenClaw adapter boundary note
 
@@ -36,6 +37,7 @@ cd /Users/satojunichi/Documents/openclaw/p1-core
 python3 -m unittest discover -s tests
 python3 -m p1_core.worker.ollama_worker --help
 python3 -m p1_core.bootstrap.bootstrap_p1 --help
+python3 -m p1_core.cli --root /Users/satojunichi/.openclaw/workspace/systems/p1 dashboard
 python3 -m p1_core.reporting.write_example_reports --root /tmp/p1-core-smoke
 ```
 

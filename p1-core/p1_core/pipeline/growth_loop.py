@@ -33,6 +33,7 @@ class GrowthLoop:
     cloud_evaluation_store: CloudEvaluationStore
     evaluator: Evaluator
     governor: Governor
+    verification_mode: bool = False
     knowledge_store: KnowledgeStore = field(init=False)
     event_log: EventLog = field(init=False)
     proposal_store: ProposalStore = field(init=False)
@@ -261,14 +262,16 @@ class GrowthLoop:
                     "state": records[index].state.value,
                     "state_history": state_history,
                     "previous_snapshot_exists": previous_snapshot is not None,
-                    "previous_snapshot_summary": (previous_snapshot or {}).get("summary"),
+                    "previous_snapshot_id": (previous_snapshot or {}).get("snapshot_id"),
                     "matched_previous_summary": proposal.summary in previous_summaries,
                     "governance_profile": governance_profile,
                     "previous_experiment_outcome": (previous_experiment or {}).get("outcome"),
+                    "verification_mode": self.verification_mode,
                 },
                 {
                     **proposal_dict,
                     "counterexamples_present": bool(counterexamples),
+                    "verification_mode": self.verification_mode,
                 },
             )
             cloud_response = None
@@ -291,6 +294,7 @@ class GrowthLoop:
                     "critique": critique,
                     "cloud_response": cloud_response,
                     "governance_profile": governance_profile,
+                    "verification_mode": self.verification_mode,
                 }
             )
             if evaluation["decision"] == "defer":
@@ -314,7 +318,7 @@ class GrowthLoop:
                     reason=str(evaluation["reason"]),
                     actor="growth_loop",
                 )
-            elif evaluation["decision"] == "candidate" and governance["approved"]:
+            elif evaluation["decision"] in ("active", "candidate") and governance["approved"]:
                 self.transition_knowledge(
                     record_id=records[index].record_id,
                     new_state=KnowledgeState.ACTIVE,
@@ -711,7 +715,7 @@ class GrowthLoop:
         return restored
 
 
-def build_loop(root: Path, worker_service: WorkerService) -> GrowthLoop:
+def build_loop(root: Path, worker_service: WorkerService, verification_mode: bool = False) -> GrowthLoop:
     return GrowthLoop(
         root=root,
         worker_service=worker_service,
@@ -721,6 +725,7 @@ def build_loop(root: Path, worker_service: WorkerService) -> GrowthLoop:
         cloud_evaluation_store=CloudEvaluationStore(root / "state" / "cloud_evaluation"),
         evaluator=Evaluator(),
         governor=Governor(),
+        verification_mode=verification_mode,
     )
 
 
