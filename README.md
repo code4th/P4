@@ -7,7 +7,7 @@ P4 Core is a minimal local-LLM agent runtime for purpose execution.
 - Mainline version: `0.3.0-mainline`
 - Mainline date: `2026-04-21`
 - Canonical handoff: `handoff/p4-design-spec-2026-04-21.md`
-- Code root for P4 inheritance: `p4-core/`
+- Code root for P4 inheritance: repository root
 - Verification command: `python3 -m unittest discover -s tests`
 
 This is the current P4 baseline. Older P4 notes and live workspaces are useful history, but P4 should inherit from this code root and the canonical handoff above.
@@ -33,7 +33,7 @@ It is intentionally smaller than P1/P2:
 ## Quick start
 
 ```bash
-cd /Users/satojunichi/Documents/openclaw/p4-core
+cd /path/to/P4
 python3 -m unittest discover -s tests
 python3 -m p4_core.cli --root /tmp/p4-demo version
 python3 -m p4_core.cli --root /tmp/p4-demo bootstrap --force
