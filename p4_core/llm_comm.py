@@ -62,7 +62,7 @@ def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: s
                     status="running",
                     current_role=role,
                     current_model=model,
-                    current_stream_text=current_stream[-4000:],
+                    current_stream_text=self._tail_stream_text(current_stream, limit=4000),
                     worker_running=self._worker_running(),
                 )
             last_content = "".join(content_parts)
@@ -99,7 +99,7 @@ def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: s
                     status="running",
                     current_role=role,
                     current_model=model,
-                    current_stream_text=current_stream[-4000:],
+                    current_stream_text=self._tail_stream_text(current_stream, limit=4000),
                     worker_running=self._worker_running(),
                 )
             last_content = "".join(content_parts)
@@ -120,7 +120,7 @@ def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: s
                 status="running",
                 current_role=role,
                 current_model=model,
-                current_stream_text=last_display[-4000:],
+                current_stream_text=self._tail_stream_text(last_display, limit=4000),
                 worker_running=self._worker_running(),
             )
         envelope = self._parse_envelope(last_content)
@@ -139,7 +139,7 @@ def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: s
                 last_llm_thinking_preview=last_thinking[:500],
                 last_llm_parse_issue=None,
                 last_llm_stream_metadata=stream_metadata,
-                current_stream_text=last_display[-4000:],
+                current_stream_text=self._tail_stream_text(last_display, limit=4000),
             )
             return {
                 "envelope": envelope,
@@ -201,7 +201,7 @@ def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: s
         last_llm_thinking_preview=last_thinking[:500],
         last_llm_parse_issue=parse_issue,
         last_llm_stream_metadata=stream_metadata,
-        current_stream_text=last_display[-4000:],
+        current_stream_text=self._tail_stream_text(last_display, limit=4000),
         last_error=f"llm response did not follow json contract: {parse_issue}",
     )
     return {
@@ -223,6 +223,18 @@ def _format_llm_stream_text(self, *, thinking_text: str, content_text: str) -> s
     if thinking:
         return f"[thinking]\n{thinking}"
     return content
+
+
+def _tail_stream_text(self, text: str, *, limit: int) -> str:
+    value = str(text or "")
+    if len(value) <= limit:
+        return value
+    tail = value[-limit:]
+    if value.startswith("[thinking]") and not tail.startswith("[thinking]"):
+        return "[thinking]\n... [live output truncated]\n" + tail
+    if value.startswith("[content]") and not tail.startswith("[content]"):
+        return "[content]\n... [live output truncated]\n" + tail
+    return tail
 
 
 def _json_repair_prompt(self, *, parse_target_text: str, stream_metadata: dict[str, Any]) -> str:

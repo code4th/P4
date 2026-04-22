@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from p4_core.dashboard import create_dashboard_server
@@ -103,15 +104,20 @@ class DashboardTests(unittest.TestCase):
                 self.assertIn("P4 ダッシュボード", html)
                 self.assertIn("進捗ログ", html)
                 self.assertIn("実行操作", html)
-                self.assertIn("現在の実行", html)
+                self.assertIn("メッセージ送信", html)
+                self.assertNotIn("現在の実行", html)
                 self.assertIn('id="statusPill"', html)
+                self.assertIn('id="sendButton"', html)
                 self.assertNotIn('id="currentRunStream"', html)
+                self.assertNotIn('id="currentRunMessage"', html)
                 self.assertIn("function renderSnapshot(snapshot)", html)
                 self.assertIn('id="operationsPanel"', html)
                 self.assertIn('id="updatesPanel"', html)
                 self.assertNotIn('id="framesPanel"', html)
                 self.assertNotIn("フレーム階層", html)
                 self.assertIn("flow-phase", html)
+                self.assertIn("階層深度:", html)
+                self.assertIn("インデント:", html)
                 self.assertIn("まだ実行操作はありません。", html)
                 self.assertIn("function renderFlowSteps(steps, opId", html)
                 self.assertIn("function renderFlowItem(item, scrollId", html)
@@ -119,8 +125,7 @@ class DashboardTests(unittest.TestCase):
                 self.assertNotIn("onclick=\"toggleNested('current-stream')\"", html)
                 self.assertIn("onclick=\"sendMessage()\"", html)
                 self.assertIn("ライブ出力", html)
-                self.assertIn("直近結果", html)
-                self.assertIn('id="latestResult"', html)
+                self.assertNotIn('id="latestResult"', html)
                 self.assertIn("ターミナルエージェント", html)
                 self.assertIn("自動シェル", html)
                 self.assertNotIn('id="frameMetrics"', html)
@@ -202,8 +207,9 @@ class DashboardTests(unittest.TestCase):
             paths = WorkspacePaths(root)
             runtime = json.loads(paths.runtime_status_path.read_text(encoding="utf-8"))
             runtime["status"] = "running"
+            runtime["current_operation_id"] = "op-current"
             runtime["current_started_at"] = "2026-04-18T10:05:00+00:00"
-            runtime["last_event_at"] = "2026-04-18T10:06:00+00:00"
+            runtime["last_event_at"] = datetime.now(timezone.utc).isoformat()
             write_json(paths.runtime_status_path, runtime)
 
             snapshot = build_snapshot(root)
@@ -213,6 +219,98 @@ class DashboardTests(unittest.TestCase):
             stale = next(item for item in operations if item["operation_id"] == "op-old")
             self.assertEqual(current["status"], "running")
             self.assertEqual(stale["status"], "failed")
+
+    def test_snapshot_keeps_runtime_current_operation_running_with_live_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            from p4_core.dashboard import build_snapshot, render_dashboard_html
+            from p4_core.workspace import WorkspacePaths, active_session_id, append_session_event, write_json
+
+            session_id = active_session_id(root)
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "operation",
+                    "role": "system",
+                    "operation_id": "op-current",
+                    "title": "Terminal agent",
+                    "detail": "current run",
+                    "status": "running",
+                    "started_at": "2026-04-18T10:00:00+00:00",
+                },
+            )
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "user_message",
+                    "role": "user",
+                    "content": "ビートルズってボンジョビ？",
+                    "step_index": 0,
+                    "timestamp": "2026-04-18T10:00:01+00:00",
+                },
+            )
+            paths = WorkspacePaths(root)
+            runtime = json.loads(paths.runtime_status_path.read_text(encoding="utf-8"))
+            now = datetime.now(timezone.utc).isoformat()
+            runtime["status"] = "running"
+            runtime["worker_running"] = False
+            runtime["current_operation_id"] = "op-current"
+            runtime["current_stream_text"] = "[thinking]\nanswering Beatles question"
+            runtime["last_event_at"] = now
+            write_json(paths.runtime_status_path, runtime)
+
+            snapshot = build_snapshot(root)
+            operation = snapshot["recent_operations"][0]
+            self.assertEqual(operation["status"], "running")
+            live_items = [
+                item
+                for step in operation["flow_steps"]
+                for item in step.get("items", [])
+                if item.get("label") == "live_stream"
+            ]
+            self.assertEqual(len(live_items), 1)
+            self.assertIn("Beatles", live_items[0]["content"])
+            html = render_dashboard_html(snapshot)
+            self.assertIn("LLMライブ", html)
+
+    def test_snapshot_marks_runtime_current_operation_failed_when_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            from p4_core.dashboard import build_snapshot
+            from p4_core.workspace import WorkspacePaths, active_session_id, append_session_event, write_json
+
+            session_id = active_session_id(root)
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "operation",
+                    "role": "system",
+                    "operation_id": "op-stale-current",
+                    "title": "Terminal agent",
+                    "detail": "stale current run",
+                    "status": "running",
+                    "started_at": "2026-04-18T10:00:00+00:00",
+                },
+            )
+            paths = WorkspacePaths(root)
+            runtime = json.loads(paths.runtime_status_path.read_text(encoding="utf-8"))
+            runtime["status"] = "running"
+            runtime["worker_running"] = False
+            runtime["current_operation_id"] = "op-stale-current"
+            runtime["current_stream_text"] = "[thinking]\nstale output"
+            runtime["last_event_at"] = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+            write_json(paths.runtime_status_path, runtime)
+
+            snapshot = build_snapshot(root)
+            operation = snapshot["recent_operations"][0]
+            self.assertEqual(operation["status"], "failed")
+            self.assertIn("stale output", operation["output_preview"])
+            self.assertIn("no active worker and no recent activity", operation["detail"])
 
     def test_snapshot_renders_frame_events_inside_operation_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

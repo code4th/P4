@@ -155,6 +155,13 @@ def _normalize_operation_rows(runtime: dict[str, Any], operations: list[dict[str
                 now_dt = _parse_timestamp(now)
                 activity_age_seconds = (now_dt - last_dt).total_seconds()
             except Exception: pass
+        if is_active_in_runtime and runtime.get("last_event_at"):
+            try:
+                runtime_last_dt = _parse_timestamp(str(runtime.get("last_event_at") or ""))
+                now_dt = _parse_timestamp(now)
+                activity_age_seconds = (now_dt - runtime_last_dt).total_seconds()
+            except Exception:
+                pass
         if is_active_in_runtime and (worker_running or activity_age_seconds < 120):
             continue
         if age_seconds < 60: continue
@@ -162,6 +169,8 @@ def _normalize_operation_rows(runtime: dict[str, Any], operations: list[dict[str
         if current_op_id_in_runtime and current_op_id_in_runtime != str(current.get("operation_id")): pass
         elif worker_running and activity_age_seconds < 300: continue
         current["status"] = "failed"
+        if is_active_in_runtime and runtime.get("current_stream_text") and not current.get("output_preview"):
+            current["output_preview"] = str(runtime.get("current_stream_text") or "")
         next_op_start = None
         if i + 1 < len(chrono):
             next_op_start = chrono[i+1].get("started_at")
@@ -172,7 +181,12 @@ def _normalize_operation_rows(runtime: dict[str, Any], operations: list[dict[str
             current["duration_ms"] = _duration_ms(str(current.get("started_at") or ""), str(current.get("finished_at") or ""))
         detail = str(current.get("detail") or "")
         if "normalized from stale" not in detail:
-            reason = "another run is active" if runtime_status.startswith("running") else "runtime is idle and last activity was too long ago"
+            if is_active_in_runtime:
+                reason = "runtime current operation has no active worker and no recent activity"
+            elif runtime_status.startswith("running"):
+                reason = "another run is active"
+            else:
+                reason = "runtime is idle and last activity was too long ago"
             current["detail"] = (detail + f"\n\n[normalized from stale running operation because {reason}]").strip()
     return list(reversed(chrono))
 
@@ -311,6 +325,38 @@ def _flow_steps_for_operation(operation: dict[str, Any], events: list[dict[str, 
         row["phase"] = _phase_for_flow_step(row)
     return rows
 
+
+def _append_live_stream_step(operation: dict[str, Any], runtime: dict[str, Any]) -> None:
+    if str(operation.get("status") or "") != "running":
+        return
+    live_text = str(operation.get("output_preview") or runtime.get("current_stream_text") or "")
+    if not live_text:
+        return
+    steps = operation.setdefault("flow_steps", [])
+    if not isinstance(steps, list):
+        return
+    last_step_index = 0
+    for step in steps:
+        try:
+            last_step_index = max(last_step_index, int(step.get("step_index") or 0))
+        except Exception:
+            pass
+    live_step = {
+        "step_index": last_step_index + 1,
+        "title": "Live",
+        "phase": "LLM_STREAMING",
+        "items": [
+            {
+                "label": "live_stream",
+                "content": live_text,
+                "code": "llm_live_stream",
+                "frame_depth": 0,
+                "frame_id_for_display": "",
+            }
+        ],
+    }
+    steps.append(live_step)
+
 def _latest_blocked_reason(flow_steps: list[dict[str, Any]]) -> str | None:
     latest_block: str | None = None
     latest_finish_seen = False
@@ -366,6 +412,7 @@ def build_snapshot(root: Path) -> dict[str, Any]:
                 operation["trace_preview"] = trace_preview
                 operation["flow_preview"] = trace_preview
             operation["flow_steps"] = _flow_steps_for_operation(operation, events)
+            _append_live_stream_step(operation, runtime)
             blocked_reason = _latest_blocked_reason(operation["flow_steps"])
             if blocked_reason:
                 operation["blocked_reason"] = blocked_reason

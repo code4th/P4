@@ -7,7 +7,7 @@ P4 Core is a minimal local-LLM agent runtime for purpose execution.
 - Mainline version: `0.3.0-mainline`
 - Mainline date: `2026-04-21`
 - Canonical handoff: `handoff/p4-design-spec-2026-04-21.md`
-- Code root for P4 inheritance: repository root
+- Code root for P4 inheritance: `p4-core/`
 - Verification command: `python3 -m unittest discover -s tests`
 
 This is the current P4 baseline. Older P4 notes and live workspaces are useful history, but P4 should inherit from this code root and the canonical handoff above.
@@ -33,7 +33,7 @@ It is intentionally smaller than P1/P2:
 ## Quick start
 
 ```bash
-cd /path/to/P4
+cd /Users/satojunichi/Documents/openclaw/p4-core
 python3 -m unittest discover -s tests
 python3 -m p4_core.cli --root /tmp/p4-demo version
 python3 -m p4_core.cli --root /tmp/p4-demo bootstrap --force
@@ -91,7 +91,7 @@ Coding/tool turns run inside a dedicated LLM workspace at `workspaces/runs/<turn
 
 For file edits, avoid putting long source code in one JSON argument. The chunk budget is configured once as `runtime.tool_content_chunk_bytes` and is used by both the runtime guard and the prompt. If file content exceeds that budget, the LLM should return only the next `write_file` / `append_file` chunk in the current step and continue with another `append_file` step later. Oversized `write_file` / `append_file` calls fail with guidance instead of silently accepting brittle payloads.
 
-The controller fast path is limited to executing commands that the user explicitly requested. It must not synthesize fixed coding artifacts for benchmark-like prompts; coding tasks should go through the normal LLM action loop.
+P4 does not use deterministic controller shortcuts for user work. Command execution and coding tasks go through the normal LLM action loop, with runtime guards validating requested commands, artifacts, and final grounding.
 
 Finish is guarded by required-command checks, expected-artifact checks, and a grounding judge. The grounding judge asks for JSON verdicts and separates `ng` from judge failures such as `invalid_output`, `invalid_json`, `empty_output`, and `error`.
 

@@ -51,6 +51,7 @@ _DASHBOARD_TPL = """<!doctype html>
     .flow-item { margin-top: 8px; }
     .flow-label { font-size: 10px; text-transform: uppercase; color: #5b6e7f; margin-bottom: 2px; display: flex; gap: 6px; align-items: center; }
     .depth-badge { display: inline-block; min-width: 34px; padding: 1px 5px; border-radius: 4px; border: 1px solid #2a3440; background: #121a20; color: #9fb4c7; font-size: 10px; text-align: center; }
+    .depth-meta { color: #8ca0b1; text-transform: none; }
     .flow-content { background: #0c1013; padding: 8px; border-radius: 4px; border: 1px solid #1f272e; max-height: 420px; overflow: auto; }
 
     .flow-item.assistant_message .flow-content { border-left: 2px solid var(--color-running); }
@@ -61,6 +62,9 @@ _DASHBOARD_TPL = """<!doctype html>
     .flow-item.llm_output_issue .flow-content { border-left: 3px solid #5b8def; background: #0e1520; color: #dcecff; font-style: normal; }
     .flow-item.llm_output_issue .flow-label { color: #9ec5ff; font-weight: bold; }
     .flow-item.llm_output_issue .flow-k { color: #9ec5ff; font-weight: 700; }
+    .flow-content.llm-thinking { border-left: 3px solid #5b8def; background: #0e1520; color: #dcecff; }
+    .flow-item.live_stream .flow-content { border-left: 3px solid #5b8def; background: #0e1520; color: #dcecff; }
+    .flow-item.live_stream .flow-label { color: #9ec5ff; font-weight: bold; }
     .flow-item.frame_opened .flow-content { border-left: 3px solid #2d8f6f; background: #0e1715; }
     .flow-item.frame_returned .flow-content, .flow-item.child_return .flow-content { border-left: 3px solid #5b8def; background: #0f141b; }
 
@@ -105,15 +109,6 @@ _DASHBOARD_TPL = """<!doctype html>
     </section>
 
     <section class="card">
-      <h2>現在の実行</h2>
-      <pre id="currentRunMessage" style="margin-bottom: 12px;">__USER_MESSAGE__</pre>
-      <div style="margin-bottom: 12px;">
-        <div class="subtle" style="margin-bottom: 6px;">直近結果</div>
-        <pre id="latestResult" class="result-output">__LATEST_RESULT__</pre>
-      </div>
-    </section>
-
-    <section class="card">
       <h2>メッセージ送信</h2>
       <div style="display: flex; gap: 8px; margin-bottom: 8px;">
         <select id="modeSelect" style="flex: 1; background: #0f1316; color: white; border: 1px solid #2d3944; border-radius: 4px; padding: 4px;">
@@ -128,7 +123,7 @@ _DASHBOARD_TPL = """<!doctype html>
         </select>
       </div>
       <textarea id="messageText" placeholder="メッセージを入力..."></textarea>
-      <button onclick="sendMessage()" style="margin-top: 8px; width: 100%;">送信</button>
+      <button id="sendButton" type="button" onclick="sendMessage()" style="margin-top: 8px; width: 100%;">送信</button>
       <div id="chatResult" class="subtle" style="margin-top: 4px;"></div>
     </section>
 
@@ -218,12 +213,13 @@ _DASHBOARD_TPL = """<!doctype html>
     }
 
     function renderFlowItem(item, scrollId = "") {
-      const labels = { observer_note: '解説者', system_note: 'システム', planning_note: '計画', activity_update: 'システム状態', assistant_message: 'LLM応答', user_message: 'ユーザー', tool_call: 'ツール呼び出し', tool_result: 'ツール結果', finish: '完了', frame_opened: 'フレーム開始', frame_returned: 'フレーム帰還', child_return: '子フレーム結果' };
+      const labels = { observer_note: '解説者', system_note: 'システム', planning_note: '計画', activity_update: 'システム状態', assistant_message: 'LLM応答', user_message: 'ユーザー', tool_call: 'ツール呼び出し', tool_result: 'ツール結果', finish: '完了', frame_opened: 'フレーム開始', frame_returned: 'フレーム帰還', child_return: '子フレーム結果', live_stream: 'LLMライブ' };
       const label = esc(labels[item.label] || item.label || "");
       let content = esc(item.content || "");
       const depth = Number(item.frame_depth || 0);
       const indent = Math.min(depth, 8) * 18;
       const depthBadge = `<span class="depth-badge">D${esc(depth)}</span>`;
+      const depthMeta = `<span class="depth-meta">階層深度: ${esc(depth)} / インデント: ${esc(indent)}px</span>`;
 
       // Highlight blocked states
       const isBlocked = (item.label === 'system_note' && content.includes('ブロックされました'));
@@ -245,6 +241,8 @@ _DASHBOARD_TPL = """<!doctype html>
         content = renderCommentatorContent(item.content || "");
       } else if (item.label === 'system_note' && item.code === 'llm_output_issue' && item.details) {
         content = renderLlmOutputIssue(item);
+      } else if (item.label === 'live_stream') {
+        content = `<div class="flow-content">${renderLiveOutput(item.content || "")}</div>`;
       } else if (item.label === 'frame_opened' || item.label === 'frame_returned' || item.label === 'child_return') {
         content = renderFrameFlowContent(item);
       } else {
@@ -253,7 +251,7 @@ _DASHBOARD_TPL = """<!doctype html>
       content = withFlowScrollId(content, scrollId);
       const itemClass = item.code === 'llm_output_issue' ? 'llm_output_issue' : esc(item.label);
       return `<div class="flow-item ${itemClass} ${extraClass}" style="margin-left:${indent}px">
-        <div class="flow-label">${depthBadge}<span>${label}${isBlocked ? ' (BLOCKED)' : ''}</span></div>
+        <div class="flow-label">${depthBadge}${depthMeta}<span>${label}${isBlocked ? ' (BLOCKED)' : ''}</span></div>
         ${content}
       </div>`;
     }
@@ -271,6 +269,31 @@ _DASHBOARD_TPL = """<!doctype html>
         ${(!thinking && !raw && combined) ? `<div class="flow-k">combined</div><pre>${esc(combined)}</pre>` : ''}
         ${meta ? `<div class="flow-k">stream metadata</div><pre>${esc(meta)}</pre>` : ''}
       </div>`;
+    }
+
+    function renderLiveOutput(text) {
+      const clean = String(text || "");
+      if (!clean) return '<div class="flow-empty">まだ出力はありません。</div>';
+      if (clean.startsWith("Waiting for model response")) {
+        return `<div class="live-state waiting"><div class="flow-k">status</div><pre>Waiting for model response...</pre></div>`;
+      }
+      if (clean.startsWith("Running command via ")) {
+        return `<div class="live-state running"><div class="flow-k">status</div><pre>${esc(clean)}</pre></div>`;
+      }
+      if (clean.startsWith("[thinking]")) {
+        const body = clean.slice("[thinking]".length).replace(/^\\n/, "");
+        return `<div class="flow-content llm-thinking"><div class="flow-k">thinking stream</div><pre>${esc(body)}</pre></div>`;
+      }
+      if (clean.includes("[content]")) {
+        const [thinkingPart, contentPart] = clean.split("[content]");
+        const thinking = thinkingPart.replace("[thinking]", "").trim();
+        const content = String(contentPart || "").trim();
+        return `<div class="flow-content llm-thinking">
+          ${thinking ? `<div class="flow-k">thinking stream</div><pre>${esc(thinking)}</pre>` : ''}
+          <div class="flow-k">content stream</div><pre>${esc(content)}</pre>
+        </div>`;
+      }
+      return `<pre>${esc(clean)}</pre>`;
     }
 
     function renderFrameFlowContent(item) {
@@ -318,27 +341,146 @@ findings: ${esc(shortText(findings || "-", 320))}</pre></div>`;
       }</div>`;
     }
 
+    function scrollSnapshot(el) {
+      const bottom = Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop);
+      return { top: el.scrollTop, left: el.scrollLeft, nearBottom: bottom < 8 };
+    }
+
+    function restoreElementScroll(el, saved) {
+      if (!saved) return;
+      if (saved.nearBottom) el.scrollTop = el.scrollHeight;
+      else el.scrollTop = saved.top;
+      el.scrollLeft = saved.left;
+    }
+
+    function setHtmlPreservingScroll(el, html, key = "") {
+      if (!el) return;
+      const nextKey = key || html;
+      if (el.dataset.renderKey === nextKey) return;
+      const saved = scrollSnapshot(el);
+      el.innerHTML = html;
+      el.dataset.renderKey = nextKey;
+      restoreElementScroll(el, saved);
+    }
+
+    function setTextIfChanged(el, text) {
+      if (el && el.textContent !== String(text ?? "")) el.textContent = String(text ?? "");
+    }
+
+    function operationOpenByDefault(op, index) {
+      const opId = op.operation_id || "";
+      return openOperationIds.has(opId) || (!closedOperationIds.has(opId) && (op.status === "running" || index === 0));
+    }
+
+    function renderBlockedReason(op) {
+      return op.blocked_reason ? `<strong>ブロック理由</strong><pre>${esc(op.blocked_reason)}</pre>` : "";
+    }
+
+    function renderOperationCard(op, index) {
+      const opId = op.operation_id || "";
+      const open = operationOpenByDefault(op, index);
+      return `<section class="operation-card ${esc(op.status)}" data-operation-id="${esc(opId)}">
+        <button class="operation-head" type="button" onclick="toggleOperation('${esc(opId)}')">
+          <strong data-role="operation-title"></strong>
+          <span data-role="operation-status" class="operation-status"></span>
+        </button>
+        <div class="bubble-meta" data-role="operation-started"></div>
+        <div class="operation-body ${open ? '' : 'closed'}">
+          <pre class="operation-detail" data-role="operation-detail" style="padding: 12px;"></pre>
+          <div class="blocked-reason" data-role="blocked-reason" style="display:none;"></div>
+          <div class="flow-container" style="padding: 0 12px 12px 12px;">
+            <div class="flow-label"><span class="depth-badge">FLOW</span><span>階層フロー</span></div>
+            <div data-role="flow-body"></div>
+          </div>
+          <div class="nested-block">
+            <button class="nested-toggle" type="button" onclick="toggleNested('${esc(opId)}:live')">ライブ出力</button>
+            <div class="nested-content ${openNestedIds.has(`${opId}:live`) ? '' : 'closed'}" data-nested-id="${esc(opId)}:live">
+              <div class="operation-output" data-role="live-output"></div>
+            </div>
+          </div>
+        </div>
+      </section>`;
+    }
+
+    function updateOperationCard(card, op, index) {
+      const opId = op.operation_id || "";
+      card.className = `operation-card ${op.status || ""}`;
+      card.dataset.operationId = opId;
+      setTextIfChanged(card.querySelector('[data-role="operation-title"]'), op.title || "Operation");
+      const statusEl = card.querySelector('[data-role="operation-status"]');
+      setTextIfChanged(statusEl, op.status || "");
+      if (statusEl) statusEl.className = `operation-status ${op.status || ""}`;
+      setTextIfChanged(card.querySelector('[data-role="operation-started"]'), op.started_at || "");
+      setTextIfChanged(card.querySelector('[data-role="operation-detail"]'), op.detail || "");
+      const body = card.querySelector(".operation-body");
+      if (body) body.classList.toggle("closed", !operationOpenByDefault(op, index));
+      const blocked = card.querySelector('[data-role="blocked-reason"]');
+      if (blocked) {
+        blocked.style.display = op.blocked_reason ? "" : "none";
+        setHtmlPreservingScroll(blocked, renderBlockedReason(op), `blocked:${op.blocked_reason || ""}`);
+      }
+      const flowBody = card.querySelector('[data-role="flow-body"]');
+      const flowKey = JSON.stringify(op.flow_steps || []);
+      setHtmlPreservingScroll(flowBody, renderFlowSteps(op.flow_steps || [], opId), `flow:${flowKey}`);
+      const live = card.querySelector('[data-role="live-output"]');
+      setHtmlPreservingScroll(live, renderLiveOutput(op.output_preview || ""), `live:${op.output_preview || ""}`);
+    }
+
+    function syncOperations(panel, ops) {
+      const existing = new Map(Array.from(panel.querySelectorAll(".operation-card[data-operation-id]")).map(card => [card.dataset.operationId, card]));
+      const seen = new Set();
+      if (ops.length && existing.size === 0) panel.innerHTML = "";
+      ops.forEach((op, index) => {
+        const opId = op.operation_id || "";
+        if (!opId) return;
+        let card = existing.get(opId);
+        if (card && !card.querySelector('[data-role="operation-title"]')) {
+          card.remove();
+          card = null;
+        }
+        if (!card) {
+          const wrapper = document.createElement("div");
+          wrapper.innerHTML = renderOperationCard(op, index).trim();
+          card = wrapper.firstElementChild;
+        }
+        updateOperationCard(card, op, index);
+        panel.appendChild(card);
+        seen.add(opId);
+      });
+      for (const [opId, card] of existing.entries()) {
+        if (!seen.has(opId)) card.remove();
+      }
+      if (!ops.length) panel.innerHTML = "<div>まだ実行操作はありません。</div>";
+    }
+
     function captureScrollState() {
       const boxes = {};
       document.querySelectorAll("[data-nested-id] .operation-output").forEach(el => {
         const owner = el.closest("[data-nested-id]");
         const id = owner ? owner.getAttribute("data-nested-id") : "";
-        if (id) boxes[id] = { top: el.scrollTop, left: el.scrollLeft };
+        if (id) {
+          const bottom = Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop);
+          boxes[id] = { top: el.scrollTop, left: el.scrollLeft, bottom, nearBottom: bottom < 8 };
+        }
       });
       document.querySelectorAll("[data-flow-scroll-id]").forEach(el => {
         const id = el.getAttribute("data-flow-scroll-id") || "";
-        if (id) boxes[`flow:${id}`] = { top: el.scrollTop, left: el.scrollLeft };
+        if (id) {
+          const bottom = Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop);
+          boxes[`flow:${id}`] = { top: el.scrollTop, left: el.scrollLeft, bottom, nearBottom: bottom < 8 };
+        }
       });
       return { x: window.scrollX, y: window.scrollY, boxes };
     }
 
-    function restoreScrollState(state) {
+    function restoreScrollStateNow(state) {
       document.querySelectorAll("[data-nested-id] .operation-output").forEach(el => {
         const owner = el.closest("[data-nested-id]");
         const id = owner ? owner.getAttribute("data-nested-id") : "";
         const saved = id ? state.boxes[id] : null;
         if (saved) {
-          el.scrollTop = saved.top;
+          if (saved.nearBottom) el.scrollTop = el.scrollHeight;
+          else el.scrollTop = saved.top;
           el.scrollLeft = saved.left;
         }
       });
@@ -346,11 +488,18 @@ findings: ${esc(shortText(findings || "-", 320))}</pre></div>`;
         const id = el.getAttribute("data-flow-scroll-id") || "";
         const saved = state.boxes[`flow:${id}`];
         if (saved) {
-          el.scrollTop = saved.top;
+          if (saved.nearBottom) el.scrollTop = el.scrollHeight;
+          else el.scrollTop = saved.top;
           el.scrollLeft = saved.left;
         }
       });
       window.scrollTo(state.x, state.y);
+    }
+
+    function restoreScrollState(state) {
+      restoreScrollStateNow(state);
+      requestAnimationFrame(() => restoreScrollStateNow(state));
+      setTimeout(() => restoreScrollStateNow(state), 50);
     }
 
     function renderSnapshot(snapshot) {
@@ -367,38 +516,11 @@ findings: ${esc(shortText(findings || "-", 320))}</pre></div>`;
       const doneReason = rt.last_llm_stream_metadata && rt.last_llm_stream_metadata.done_reason ? ` / done: ${rt.last_llm_stream_metadata.done_reason}` : "";
       document.getElementById("lastLlmPill").textContent = `直近LLM: ${rt.last_llm_duration_ms || "-"}ms${parseIssue}${doneReason}`;
       document.getElementById("workspacePill").textContent = `作業場: ${rt.current_llm_workspace || rt.last_llm_workspace || "-"}`;
-      document.getElementById("currentRunMessage").textContent = rt.current_user_message || "実行中の要求はありません。";
-      document.getElementById("latestResult").textContent = shortText(latestResultText(snapshot), 2400);
       document.getElementById("operationsSummary").textContent = `実行操作 (${ops.length})`;
 
       if (Date.now() > suspendOperationsRenderUntil) {
          const panel = document.getElementById("operationsPanel");
-         panel.innerHTML = ops.map((op, index) => {
-           const opId = op.operation_id || "";
-           const open = openOperationIds.has(opId) || (!closedOperationIds.has(opId) && (op.status === 'running' || index === 0));
-           const blockedReason = op.blocked_reason ? `<div class="blocked-reason"><strong>ブロック理由</strong><pre>${esc(op.blocked_reason)}</pre></div>` : '';
-           return `<section class="operation-card ${op.status}" data-operation-id="${opId}">
-             <button class="operation-head" onclick="toggleOperation('${opId}')">
-               <strong>${esc(op.title)}</strong>
-               <span class="operation-status ${op.status}">${op.status}</span>
-             </button>
-             <div class="bubble-meta">${esc(op.started_at)}</div>
-             <div class="operation-body ${open ? '' : 'closed'}">
-               <pre class="operation-detail" style="padding: 12px;">${esc(op.detail)}</pre>
-               ${blockedReason}
-               <div class="flow-container" style="padding: 0 12px 12px 12px;">
-                 <div class="flow-label"><span class="depth-badge">FLOW</span><span>階層フロー</span></div>
-                 ${renderFlowSteps(op.flow_steps || [], opId)}
-               </div>
-               <div class="nested-block">
-                 <button class="nested-toggle" onclick="toggleNested('${opId}:live')">ライブ出力</button>
-                 <div class="nested-content ${openNestedIds.has(`${opId}:live`) ? '' : 'closed'}" data-nested-id="${opId}:live">
-                   <div class="operation-output"><pre>${esc(op.output_preview || "")}</pre></div>
-                 </div>
-               </div>
-             </div>
-           </section>`;
-         }).join("") || "<div>まだ実行操作はありません。</div>";
+         syncOperations(panel, ops);
       }
 
       document.getElementById("updatesPanel").innerHTML = upd.map(u =>
@@ -417,7 +539,10 @@ findings: ${esc(shortText(findings || "-", 320))}</pre></div>`;
     async function sendMessage() {
       const msg = document.getElementById("messageText").value.trim();
       if (!msg) return;
-      document.getElementById("chatResult").textContent = "送信中...";
+      const resultEl = document.getElementById("chatResult");
+      const sendButton = document.getElementById("sendButton");
+      resultEl.textContent = "送信中...";
+      sendButton.disabled = true;
       try {
         const r = await fetch("/api/message", {
           method: "POST",
@@ -430,14 +555,17 @@ findings: ${esc(shortText(findings || "-", 320))}</pre></div>`;
           })
         });
         if (r.ok) {
-          document.getElementById("chatResult").textContent = "送信しました。";
+          resultEl.textContent = "送信しました。";
           document.getElementById("messageText").value = "";
           setTimeout(refresh, 100);
         } else {
-          document.getElementById("chatResult").textContent = "送信に失敗しました。";
+          const body = await r.text();
+          resultEl.textContent = `送信に失敗しました。HTTP ${r.status} ${body.slice(0, 160)}`;
         }
       } catch(e) {
-        document.getElementById("chatResult").textContent = "ネットワークエラーです。";
+        resultEl.textContent = `ネットワークエラーです: ${e}`;
+      } finally {
+        sendButton.disabled = false;
       }
     }
 
@@ -508,6 +636,7 @@ def _render_flow_item_html(item: dict[str, Any], *, scroll_id: str = "") -> str:
         "frame_opened": "フレーム開始",
         "frame_returned": "フレーム帰還",
         "child_return": "子フレーム結果",
+        "live_stream": "LLMライブ",
     }
     label = html.escape(label_map.get(str(item.get("label") or ""), str(item.get("label") or "")))
     content = str(item.get("content") or "")
@@ -515,6 +644,7 @@ def _render_flow_item_html(item: dict[str, Any], *, scroll_id: str = "") -> str:
     depth = int(item.get("frame_depth") or 0)
     indent = min(depth, 8) * 18
     depth_badge = f"<span class=\"depth-badge\">D{depth}</span>"
+    depth_meta = f"<span class=\"depth-meta\">階層深度: {depth} / インデント: {indent}px</span>"
 
     # Blocked status detection
     extra_class = ""
@@ -527,34 +657,41 @@ def _render_flow_item_html(item: dict[str, Any], *, scroll_id: str = "") -> str:
         payload = item.get("parsed_payload")
         if isinstance(payload, dict) and tool_name == "run_command":
             return (
-                f"<div class=\"flow-item\" style=\"margin-left:{indent}px\"><div class=\"flow-label\">{depth_badge}<span>{label}</span></div>"
+                f"<div class=\"flow-item\" style=\"margin-left:{indent}px\"><div class=\"flow-label\">{depth_badge}{depth_meta}<span>{label}</span></div>"
                 f"{_render_command_result_html(payload)}"
                 "</div>"
             )
     if str(item.get("label") or "") == "observer_note":
         return (
             f"<div class=\"flow-item observer_note\" style=\"margin-left:{indent}px\">"
-            f"<div class=\"flow-label\">{depth_badge}<span>{label}</span></div>"
+            f"<div class=\"flow-label\">{depth_badge}{depth_meta}<span>{label}</span></div>"
             f"{_attach_flow_scroll_id(_render_commentator_content_html(content), scroll_id)}"
             "</div>"
         )
     if str(item.get("label") or "") == "system_note" and str(item.get("code") or "") == "llm_output_issue":
         return (
             f"<div class=\"flow-item llm_output_issue\" style=\"margin-left:{indent}px\">"
-            f"<div class=\"flow-label\">{depth_badge}<span>{label}</span></div>"
+            f"<div class=\"flow-label\">{depth_badge}{depth_meta}<span>{label}</span></div>"
             f"{_attach_flow_scroll_id(_render_llm_output_issue_html(item), scroll_id)}"
+            "</div>"
+        )
+    if str(item.get("label") or "") == "live_stream":
+        return (
+            f"<div class=\"flow-item live_stream\" style=\"margin-left:{indent}px\">"
+            f"<div class=\"flow-label\">{depth_badge}{depth_meta}<span>{label}</span></div>"
+            f"{_attach_flow_scroll_id('<div class=\"flow-content\">' + _render_live_output_html(content) + '</div>', scroll_id)}"
             "</div>"
         )
     if str(item.get("label") or "") in {"frame_opened", "frame_returned", "child_return"}:
         return (
             f"<div class=\"flow-item {html.escape(str(item.get('label') or ''))}\" style=\"margin-left:{indent}px\">"
-            f"<div class=\"flow-label\">{depth_badge}<span>{label}</span></div>"
+            f"<div class=\"flow-label\">{depth_badge}{depth_meta}<span>{label}</span></div>"
             f"{_attach_flow_scroll_id(_render_frame_flow_item_html(item), scroll_id)}"
             "</div>"
         )
     return (
         f"<div class=\"flow-item {html.escape(str(item.get('label') or ''))}{extra_class}\" style=\"margin-left:{indent}px\">"
-        f"<div class=\"flow-label\">{depth_badge}<span>{label}</span></div>"
+        f"<div class=\"flow-label\">{depth_badge}{depth_meta}<span>{label}</span></div>"
         f"<div class=\"flow-content\"{_flow_content_scroll_attr(scroll_id)}><pre>{html.escape(content)}</pre></div>"
         "</div>"
     )
@@ -630,6 +767,18 @@ def _render_live_output_html(text: str) -> str:
         return "<div class=\"live-state waiting\"><div class=\"flow-k\">status</div><pre>Waiting for model response...</pre></div>"
     if clean.startswith("Running command via "):
         return f"<div class=\"live-state running\"><div class=\"flow-k\">status</div><pre>{html.escape(clean)}</pre></div>"
+    if clean.startswith("[thinking]"):
+        body = clean[len("[thinking]") :].lstrip("\n")
+        return f"<div class=\"flow-content llm-thinking\"><div class=\"flow-k\">thinking stream</div><pre>{html.escape(body)}</pre></div>"
+    if "[content]" in clean:
+        thinking, content = clean.split("[content]", 1)
+        thinking = thinking.replace("[thinking]", "").strip()
+        content = content.strip()
+        parts = []
+        if thinking:
+            parts.append(f"<div class=\"flow-k\">thinking stream</div><pre>{html.escape(thinking)}</pre>")
+        parts.append(f"<div class=\"flow-k\">content stream</div><pre>{html.escape(content)}</pre>")
+        return f"<div class=\"flow-content llm-thinking\">{''.join(parts)}</div>"
     candidate = _extract_json_object(clean)
     if candidate is not None:
         try:
@@ -770,7 +919,7 @@ def render_dashboard_html(snapshot: dict[str, Any]) -> str:
             f"<div class=\"nested-block\">"
             f"<button class=\"nested-toggle\" onclick=\"toggleNested('{esc(op_id)}:live')\">ライブ出力</button>"
             f"<div class=\"nested-content closed\" data-nested-id=\"{esc(op_id)}:live\">"
-            f"<div class=\"operation-output\"><pre>{esc(output_preview)}</pre></div>"
+            f"<div class=\"operation-output\">{_render_live_output_html(output_preview)}</div>"
             f"</div>"
             f"</div>"
             f"</div>"
@@ -795,8 +944,6 @@ def render_dashboard_html(snapshot: dict[str, Any]) -> str:
         last_llm_parts.append(f"done: {metadata.get('done_reason')}")
     res = res.replace("__LAST_LLM__", esc(" / ".join(str(part) for part in last_llm_parts)))
     res = res.replace("__LLM_WORKSPACE__", esc(str(runtime.get("current_llm_workspace") or runtime.get("last_llm_workspace") or "-")))
-    res = res.replace("__USER_MESSAGE__", esc(str(runtime.get("current_user_message") or "No active run.")))
-    res = res.replace("__LATEST_RESULT__", esc(_short_text(_latest_result_text(snapshot), 2400)))
     res = res.replace("__MODEL_OPTIONS__", model_options)
     res = res.replace("__OP_COUNT__", str(len(operations)))
     res = res.replace("__OP_ROWS__", operation_rows)

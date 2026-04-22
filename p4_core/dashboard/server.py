@@ -311,7 +311,16 @@ def _run_ollama_chat(root: Path, message: str, model: str) -> None:
             system_status="failed",
             system_reason=f"native generate 失敗: {exc}",
         )
-        _update_runtime(root, status="idle", last_error=str(exc), current_started_at=None, current_finished_at=finished_at)
+        _update_runtime(
+            root,
+            status="idle",
+            last_error=str(exc),
+            current_user_message=None,
+            current_stream_text="",
+            current_operation_id=None,
+            current_started_at=None,
+            current_finished_at=finished_at,
+        )
         return
     finished_at = now_iso()
     final_answer = "".join(stream_parts).strip()
@@ -329,7 +338,15 @@ def _run_ollama_chat(root: Path, message: str, model: str) -> None:
         system_status="success",
         system_reason="native generate が完了し、システム側の却下・ブロックは発生していません。",
     )
-    _update_runtime(root, status="idle", current_started_at=None, current_finished_at=finished_at)
+    _update_runtime(
+        root,
+        status="idle",
+        current_user_message=None,
+        current_stream_text="",
+        current_operation_id=None,
+        current_started_at=None,
+        current_finished_at=finished_at,
+    )
 
 def _run_terminal_agent(root: Path, message: str, model: str, shell_name: str) -> None:
     from p4_core.runtime import AgentRuntime
@@ -362,7 +379,15 @@ def _run_terminal_agent(root: Path, message: str, model: str, shell_name: str) -
         finished_at = now_iso()
         _append_activity_update(root, session_id, f"terminal agent 失敗: {exc}", status="error")
         _append_operation_event(root, session_id, operation_id=operation_id, title="Terminal agent", detail=request_detail, status="failed", started_at=started_at, finished_at=finished_at, duration_ms=_duration_ms(started_at, finished_at), output_preview=str(exc))
-    _update_runtime(root, status="idle", current_started_at=None, current_finished_at=finished_at)
+    _update_runtime(
+        root,
+        status="idle",
+        current_user_message=None,
+        current_stream_text="",
+        current_operation_id=None,
+        current_started_at=None,
+        current_finished_at=finished_at,
+    )
 
 def serve_dashboard(root: Path, *, host: str = "127.0.0.1", port: int = 8899) -> None:
     server = create_dashboard_server(root, host=host, port=port)

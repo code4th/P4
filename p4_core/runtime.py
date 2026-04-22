@@ -29,9 +29,6 @@ from p4_core.workspace import (
     read_jsonl,
     write_json,
 )
-from p4_core.fast_path import (
-    _fast_path_envelope,
-)
 from p4_core.grounding import (
     _grounding_issues,
     _parse_grounding_judge_payload,
@@ -53,6 +50,7 @@ from p4_core.llm_comm import (
     _extract_stream_metadata,
     _format_llm_stream_text,
     _json_repair_prompt,
+    _tail_stream_text,
     _thinking_only_repair_prompt,
     _looks_like_structured_envelope,
     _looks_like_truncated_json,
@@ -75,6 +73,7 @@ from p4_core.prompts import (
     _current_phase,
     _deliberation_reasons,
     _output_budget_prompt,
+    _reflection_relevant_to_user,
     _reflection_prompt_block,
     _render_action_context_events,
     _system_prompt,
@@ -958,14 +957,6 @@ class AgentRuntime:
                     "prompt": prompt,
                 },
             )
-            fast_envelope = self._fast_path_envelope(
-                step_index=step_index,
-                selection=selection,
-                user_message=recent_user_message,
-                extra_prompt=extra_prompt,
-                recent_events=recent_events,
-                steps=steps,
-            )
             self._write_runtime_status(
                 status="running",
                 current_role=selection["role"],
@@ -987,38 +978,13 @@ class AgentRuntime:
                 current_finished_at=None,
                 worker_running=self._worker_running(),
             )
-            if fast_envelope is not None:
-                telemetry = {"attempt_count": 0, "raw_text": "", "envelope": fast_envelope, "parse_issue": ""}
-                envelope = fast_envelope
-                self._write_runtime_status(
-                    status="running",
-                    current_role=selection["role"],
-                    current_turn_id=turn_id,
-                    current_queue_id=queue_id,
-                    current_user_message=recent_user_message,
-                    current_prompt_preview=prompt[:2000],
-                    current_stream_text=f"高速パスが選択されました: {fast_envelope.get('tool_name')} {json.dumps(fast_envelope.get('tool_args') or {}, ensure_ascii=False)}",
-                    current_plan=planning_note,
-                    current_phase=current_phase,
-                    current_model=selection["model"],
-                    current_model_reason=f"{selection['reason']} + fast-path",
-                    current_tool=None,
-                    current_llm_workspace=str(turn_workspace),
-                    last_llm_workspace=str(turn_workspace),
-                    last_error=None,
-                    last_system_note=None,
-                    current_started_at=read_json(self.paths.runtime_status_path, fallback={}).get("current_started_at") or now_iso(),
-                    current_finished_at=None,
-                    worker_running=self._worker_running(),
-                )
-            else:
-                telemetry = self._chat_with_repair(
-                    role=str(selection["role"]),
-                    model=str(selection["model"]),
-                    prompt=prompt,
-                    session_id=session_id,
-                )
-                envelope = telemetry["envelope"]
+            telemetry = self._chat_with_repair(
+                role=str(selection["role"]),
+                model=str(selection["model"]),
+                prompt=prompt,
+                session_id=session_id,
+            )
+            envelope = telemetry["envelope"]
             assistant_message = str(envelope.get("assistant_message") or "").strip()
             if assistant_message:
                 self._append_session_event(
@@ -1981,7 +1947,6 @@ AgentRuntime._deterministic_terminal_final_answer = _deterministic_terminal_fina
 AgentRuntime._synthesize_terminal_final_answer = _synthesize_terminal_final_answer
 AgentRuntime._normalize_run_command_evidence = _normalize_run_command_evidence
 AgentRuntime._output_preview = _output_preview
-AgentRuntime._fast_path_envelope = _fast_path_envelope
 AgentRuntime._current_phase = _current_phase
 AgentRuntime._deliberation_reasons = _deliberation_reasons
 AgentRuntime._system_prompt = _system_prompt
@@ -1992,9 +1957,11 @@ AgentRuntime._compact_context_text = _compact_context_text
 AgentRuntime._build_planning_note = _build_planning_note
 AgentRuntime._build_deliberation_note = _build_deliberation_note
 AgentRuntime._reflection_prompt_block = _reflection_prompt_block
+AgentRuntime._reflection_relevant_to_user = _reflection_relevant_to_user
 AgentRuntime._chat_with_repair = _chat_with_repair
 AgentRuntime._extract_stream_metadata = _extract_stream_metadata
 AgentRuntime._format_llm_stream_text = _format_llm_stream_text
+AgentRuntime._tail_stream_text = _tail_stream_text
 AgentRuntime._json_repair_prompt = _json_repair_prompt
 AgentRuntime._thinking_only_repair_prompt = _thinking_only_repair_prompt
 AgentRuntime._classify_llm_parse_issue = _classify_llm_parse_issue

@@ -36,7 +36,6 @@ p4_core/
 ├── observer.py        ← passive commentator (7メソッド)
 ├── grounding.py       ← finish時の証拠判定 (4メソッド)
 ├── terminal.py        ← terminal agent固有ロジック (5メソッド)
-├── fast_path.py       ← deterministic shortcuts (3メソッド)
 ├── prompts.py         ← prompt構築 (7メソッド)
 ├── llm_comm.py        ← LLM通信・JSON修復 (8メソッド)
 ├── guards.py          ← finish blocking・コマンド検証 (7メソッド)

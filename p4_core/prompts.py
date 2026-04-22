@@ -179,7 +179,7 @@ def _build_prompt(
         "直近のセッションイベント:\n"
         + ("\n".join(rendered_events) if rendered_events else "(履歴なし)")
         + "\n\n直近のリフレクション (失敗からの教訓):\n"
-        + self._reflection_prompt_block()
+        + self._reflection_prompt_block(user_message=user_message)
         + "\n\n編集方針:\n"
         + self._output_budget_prompt()
     )
@@ -308,7 +308,7 @@ def _build_deliberation_note(self, *, user_message: str, steps: list[dict[str, A
     )
 
 
-def _reflection_prompt_block(self) -> str:
+def _reflection_prompt_block(self, *, user_message: str = "") -> str:
     rows = read_jsonl(self.paths.reflections_path, limit=3)
     if not rows:
         return "(直近のリフレクションはありません)"
@@ -317,7 +317,27 @@ def _reflection_prompt_block(self) -> str:
         reflection = str(row.get("reflection") or "").strip()
         if not reflection:
             continue
+        if not self._reflection_relevant_to_user(reflection=reflection, user_message=user_message):
+            continue
         failure_class = str(row.get("failure_class") or "").strip()
         prefix = f"[{failure_class}] " if failure_class else ""
         lines.append(prefix + reflection)
     return "\n".join(lines[-3:]) if lines else "(直近のリフレクションはありません)"
+
+
+def _reflection_relevant_to_user(self, *, reflection: str, user_message: str) -> bool:
+    current = re.sub(r"\s+", "", str(user_message or "")).lower()
+    if not current:
+        return True
+    haystack = re.sub(r"\s+", "", str(reflection or "")).lower()
+    if current in haystack:
+        return True
+    if len(current) <= 8:
+        return False
+    tokens = set(re.findall(r"[a-z0-9_]{3,}|[ぁ-んァ-ヶー一-龥]{2,}", current))
+    for index in range(max(0, len(current) - 1)):
+        pair = current[index : index + 2]
+        if re.search(r"[ぁ-んァ-ヶー一-龥]", pair):
+            tokens.add(pair)
+    hits = sum(1 for token in tokens if token in haystack)
+    return hits >= 2

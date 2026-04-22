@@ -404,7 +404,6 @@ class RuntimeTests(unittest.TestCase):
                 ]
             )
             runtime = AgentRuntime(root, llm_backend=backend)
-            runtime._fast_path_envelope = lambda **_: None  # type: ignore[method-assign]
             runtime.send_message("pwd を実行して、その後 ls を実行して要約して", run_immediately=True)
             events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
             system_notes = [event for event in events if event["type"] == "system_note"]
@@ -428,7 +427,6 @@ class RuntimeTests(unittest.TestCase):
                 ]
             )
             runtime = AgentRuntime(root, llm_backend=backend)
-            runtime._fast_path_envelope = lambda **_: None  # type: ignore[method-assign]
             result = runtime.send_message("pwd を実行して、その後 ls を実行して", run_immediately=True)
             events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
             tool_results = [event for event in events if event["type"] == "tool_result"]
@@ -528,7 +526,6 @@ class RuntimeTests(unittest.TestCase):
                 ]
             )
             runtime = AgentRuntime(root, llm_backend=backend)
-            runtime._fast_path_envelope = lambda **_: None  # type: ignore[method-assign]
             runtime.send_message("pwdを実行して", run_immediately=True)
             events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
             observer = next(event for event in events if event.get("type") == "observer_note")
@@ -649,7 +646,6 @@ class RuntimeTests(unittest.TestCase):
                 ]
             )
             runtime = AgentRuntime(root, llm_backend=backend)
-            runtime._fast_path_envelope = lambda **_: None  # type: ignore[method-assign]
             result = runtime.send_message("ビートルズってボンジョビ？", run_immediately=True)
             self.assertTrue(result["ok"])
             self.assertEqual(result["run"]["last_result"]["final_answer"], "ビートルズとボン・ジョヴィは別のバンドです。")
@@ -659,6 +655,49 @@ class RuntimeTests(unittest.TestCase):
             self.assertFalse(any(event.get("code") == "llm_output_issue" for event in events))
             finish = next(event for event in events if event.get("type") == "finish")
             self.assertEqual(finish["content"], "ビートルズとボン・ジョヴィは別のバンドです。")
+
+    def test_prompt_skips_reflection_from_unrelated_previous_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            runtime = AgentRuntime(root, llm_backend=FakeBackend([]))
+            runtime._record_reflection(
+                session_id="main",
+                turn_id="turn",
+                queue_id="queue",
+                reason="step limit reached before finish",
+                steps=[],
+                user_message="迷路を作成して実行して表示して",
+            )
+            prompt = runtime._build_prompt(
+                goal_text="",
+                recent_events=[{"type": "user_message", "content": "こんばんわ"}],
+                steps=[],
+                user_message="こんばんわ",
+            )
+            self.assertNotIn("迷路を作成して実行して表示して", prompt)
+            self.assertIn("(直近のリフレクションはありません)", prompt)
+
+    def test_prompt_keeps_reflection_for_related_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            runtime = AgentRuntime(root, llm_backend=FakeBackend([]))
+            runtime._record_reflection(
+                session_id="main",
+                turn_id="turn",
+                queue_id="queue",
+                reason="step limit reached before finish",
+                steps=[],
+                user_message="迷路を作成して実行して表示して",
+            )
+            prompt = runtime._build_prompt(
+                goal_text="",
+                recent_events=[{"type": "user_message", "content": "迷路を作って実行して表示して"}],
+                steps=[],
+                user_message="迷路を作って実行して表示して",
+            )
+            self.assertIn("迷路を作成して実行して表示して", prompt)
 
     def test_extract_requested_commands_handles_japanese_connectors_and_git(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -717,22 +756,6 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(any(note.get("code") == "command_failed" for note in system_notes))
             self.assertTrue(any(note.get("reason_code") == "recovery_guidance" for note in system_notes))
 
-    def test_terminal_fast_path_executes_first_requested_command_without_initial_llm_step(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            bootstrap_workspace(root, force=True)
-            backend = FakeBackend(
-                [
-                    '{"assistant_message":"done","tool_name":"finish","tool_args":{"final_answer":"ok"}}',
-                ]
-            )
-            runtime = AgentRuntime(root, llm_backend=backend)
-            runtime.run_terminal_agent("pwd を実行して、結果だけ返して", model="devstral:latest", shell_name="bash")
-            events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
-            tool_call = next(event for event in events if event["type"] == "tool_call")
-            self.assertEqual(tool_call["tool_name"], "run_command")
-            self.assertEqual(tool_call["tool_args"]["command"], "pwd")
-
     def test_terminal_agent_uses_llm_for_maze_requests_instead_of_fixed_scaffold(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -762,31 +785,13 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(run_result["ok"])
             self.assertIn("MODEL_MAZE", run_result["stdout"])
 
-    def test_terminal_fast_path_continues_with_next_missing_command_before_llm_finish(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            bootstrap_workspace(root, force=True)
-            backend = FakeBackend(
-                [
-                    '{"assistant_message":"done","tool_name":"finish","tool_args":{"final_answer":"pwd and ls completed"}}',
-                ]
-            )
-            runtime = AgentRuntime(root, llm_backend=backend)
-            runtime.run_terminal_agent("pwd を実行して、その後 ls を実行して要約して", model="devstral:latest", shell_name="bash")
-            events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
-            tool_calls = [event for event in events if event["type"] == "tool_call" and event["tool_name"] == "run_command"]
-            self.assertEqual([event["tool_args"]["command"] for event in tool_calls], ["pwd", "ls"])
-            finish = next(event for event in reversed(events) if event["type"] == "finish")
-            self.assertIn("pwd:", finish["content"])
-            self.assertIn("pwd", finish["content"])
-            self.assertIn("ls", finish["content"])
-
     def test_terminal_controller_finish_uses_grounded_evidence_without_second_llm_turn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bootstrap_workspace(root, force=True)
             backend = FakeBackend(
                 [
+                    '{"assistant_message":"run pwd","tool_name":"run_command","tool_args":{"command":"pwd","shell":"bash"}}',
                     '{"assistant_message":"done","tool_name":"finish","tool_args":{"final_answer":"ignored"}}',
                 ]
             )
@@ -805,6 +810,8 @@ class RuntimeTests(unittest.TestCase):
             bootstrap_workspace(root, force=True)
             backend = FakeBackend(
                 [
+                    '{"assistant_message":"run pwd","tool_name":"run_command","tool_args":{"command":"pwd","shell":"bash"}}',
+                    '{"assistant_message":"run ls","tool_name":"run_command","tool_args":{"command":"ls","shell":"bash"}}',
                     '{"assistant_message":"done","tool_name":"finish","tool_args":{"final_answer":"ignored"}}',
                 ]
             )
