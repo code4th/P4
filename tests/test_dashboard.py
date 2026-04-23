@@ -450,6 +450,8 @@ class DashboardTests(unittest.TestCase):
             self.assertIn("LLM-END", html)
             self.assertIn("0123456789abcdef\nLLM-END", html)
             self.assertIn(".flow-content { background: #0c1013; padding: 8px; border-radius: 4px; border: 1px solid #1f272e; max-height: 420px; overflow: auto; }", html)
+            self.assertIn(".operation-output { max-height: 520px; overflow: auto;", html)
+            self.assertIn(".operation-output .flow-content { max-height: none; overflow: visible; }", html)
 
 
 class ModelNormalizationTests(unittest.TestCase):

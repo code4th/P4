@@ -35,7 +35,8 @@ _DASHBOARD_TPL = """<!doctype html>
     .operation-body.closed, .nested-content.closed { display: none; }
     .nested-block { margin: 8px 12px; border: 1px solid #2a3440; border-radius: 6px; background: #101519; }
     .nested-toggle { width: 100%; border: 0; background: transparent; color: #c6d2dc; text-align: left; padding: 8px; cursor: pointer; font-size: 12px; }
-    .operation-output { max-height: 300px; overflow: auto; padding: 8px; background: #080a0c; border-top: 1px solid #2a3440; }
+    .operation-output { max-height: 520px; overflow: auto; padding: 8px; background: #080a0c; border-top: 1px solid #2a3440; }
+    .operation-output .flow-content { max-height: none; overflow: visible; }
     .result-output { max-height: 360px; overflow: auto; padding: 12px; background: #080a0c; border: 1px solid #2a3440; border-radius: 6px; }
     .bubble-meta { font-size: 11px; color: #92a3b3; padding: 0 12px 8px 12px; }
     .activity-row { padding: 8px; border-bottom: 1px solid #26303a; font-size: 13px; }
