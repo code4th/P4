@@ -8,6 +8,7 @@ from pathlib import Path
 from p4_core.config_defaults import DEFAULT_TOOL_CONTENT_CHUNK_BYTES
 from p4_core.frames import FrameManager
 from p4_core.runtime import AgentRuntime
+from p4_core.schemas import FINISH_ACCEPTANCE_SCHEMA, JUDGE_VERDICT_SCHEMA, TOOL_ACTION_SCHEMA
 from p4_core.workspace import WorkspacePaths, append_session_event, bootstrap_workspace, read_json, read_jsonl, write_json
 
 
@@ -16,6 +17,7 @@ class FakeBackend:
         self.responses = list(responses)
         self.models = list(models or [])
         self.messages_seen: list[list[dict[str, str]]] = []
+        self.options_seen: list[dict] = []
 
     def chat(
         self,
@@ -26,7 +28,7 @@ class FakeBackend:
         timeout_seconds: int = 180,
     ) -> dict:
         self.messages_seen.append(messages)
-        del options
+        self.options_seen.append(dict(options or {}))
         del timeout_seconds
         if not self.responses:
             raise AssertionError("no fake responses left")
@@ -42,7 +44,7 @@ class FakeBackend:
     ) -> list[dict]:
         del model
         self.messages_seen.append(messages)
-        del options
+        self.options_seen.append(dict(options or {}))
         del timeout_seconds
         if not self.responses:
             raise AssertionError("no fake responses left")
@@ -68,10 +70,37 @@ class StreamingMetadataBackend(FakeBackend):
     ):
         del model
         self.messages_seen.append(messages)
-        del options
+        self.options_seen.append(dict(options or {}))
         del timeout_seconds
         for chunk in self.chunks:
             yield chunk
+
+    def chat(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        options: dict | None = None,
+        timeout_seconds: int = 180,
+    ) -> dict:
+        self.messages_seen.append(messages)
+        self.options_seen.append(dict(options or {}))
+        del timeout_seconds
+        content_parts: list[str] = []
+        thinking_parts: list[str] = []
+        raw: dict = {}
+        for chunk in self.chunks:
+            raw = dict(chunk)
+            message = chunk.get("message") or {}
+            content_parts.append(str(message.get("content") or ""))
+            thinking_parts.append(str(message.get("thinking") or ""))
+        return {
+            "model": model,
+            "content": "".join(content_parts),
+            "content_text": "".join(content_parts),
+            "thinking_text": "".join(thinking_parts),
+            "raw": raw,
+        }
 
 
 class SequencedStreamingBackend(FakeBackend):
@@ -89,12 +118,41 @@ class SequencedStreamingBackend(FakeBackend):
     ):
         del model
         self.messages_seen.append(messages)
-        del options
+        self.options_seen.append(dict(options or {}))
         del timeout_seconds
         if not self.attempts:
             raise AssertionError("no fake stream attempts left")
         for chunk in self.attempts.pop(0):
             yield chunk
+
+    def chat(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        options: dict | None = None,
+        timeout_seconds: int = 180,
+    ) -> dict:
+        self.messages_seen.append(messages)
+        self.options_seen.append(dict(options or {}))
+        del timeout_seconds
+        if not self.attempts:
+            raise AssertionError("no fake stream attempts left")
+        content_parts: list[str] = []
+        thinking_parts: list[str] = []
+        raw: dict = {}
+        for chunk in self.attempts.pop(0):
+            raw = dict(chunk)
+            message = chunk.get("message") or {}
+            content_parts.append(str(message.get("content") or ""))
+            thinking_parts.append(str(message.get("thinking") or ""))
+        return {
+            "model": model,
+            "content": "".join(content_parts),
+            "content_text": "".join(content_parts),
+            "thinking_text": "".join(thinking_parts),
+            "raw": raw,
+        }
 
 
 def work_package(
@@ -236,6 +294,8 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("次ステップで append_file", prompt)
             self.assertIn("既存ファイル全体を write_file で再生成しない", prompt)
             self.assertIn("open_child_frame", prompt)
+            self.assertIn("付け焼き刃の局所対応で塞がず", prompt)
+            self.assertIn("局所整合で閉じる形を優先してください", prompt)
             runtime.send_message("large.txt を作成して", run_immediately=True)
             events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
             result = next(event for event in events if event["type"] == "tool_result")
@@ -252,17 +312,21 @@ class RuntimeTests(unittest.TestCase):
             config.setdefault("runtime", {})["json_retry_limit"] = 1
             config["runtime"]["tool_content_chunk_bytes"] = 64
             write_json(WorkspacePaths(root).config_path, config)
-            backend = StreamingMetadataBackend(
+            backend = SequencedStreamingBackend(
                 [
-                    {
-                        "message": {"content": '{"assistant_message":"too long","tool_name":"write_file","tool_args":{"path":"x.py","content":"print('},
-                        "done": True,
-                        "done_reason": "length",
-                    },
-                    {
-                        "message": {"content": '{"assistant_message":"chunk","tool_name":"write_file","tool_args":{"path":"x.py","content":"print(1)\\n"}}'},
-                        "done": True,
-                    },
+                    [
+                        {
+                            "message": {"content": '{"assistant_message":"too long","tool_name":"write_file","tool_args":{"path":"x.py","content":"print('},
+                            "done": True,
+                            "done_reason": "length",
+                        },
+                    ],
+                    [
+                        {
+                            "message": {"content": '{"assistant_message":"chunk","tool_name":"write_file","tool_args":{"path":"x.py","content":"print(1)\\n"}}'},
+                            "done": True,
+                        },
+                    ],
                 ]
             )
             runtime = AgentRuntime(root, llm_backend=backend)
@@ -373,6 +437,129 @@ class RuntimeTests(unittest.TestCase):
             self.assertIsNotNone(status["last_llm_duration_ms"])
             self.assertIn("last_llm_raw_preview", status)
 
+    def test_tool_action_generation_uses_json_schema_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            backend = FakeBackend(
+                [
+                    '{"assistant_message":"hello","tool_name":"finish","tool_args":{"final_answer":"hello"}}',
+                ]
+            )
+            runtime = AgentRuntime(root, llm_backend=backend)
+            runtime.send_message("say hello", run_immediately=True)
+            self.assertEqual(backend.options_seen[0]["format"], TOOL_ACTION_SCHEMA)
+            self.assertFalse(backend.options_seen[0]["think"])
+            status = read_json(WorkspacePaths(root).runtime_status_path, fallback={})
+            self.assertTrue(status["raw_output_is_machine_json"])
+            self.assertTrue(status["schema_validation_ok"])
+
+    def test_machine_control_uses_nonstream_structured_call(self) -> None:
+        class Backend(StreamingMetadataBackend):
+            def __init__(self) -> None:
+                super().__init__(
+                    [
+                        {
+                            "message": {
+                                "content": '{"assistant_message":"hello","tool_name":"finish","tool_args":{"final_answer":"hello"}}'
+                            },
+                            "done": True,
+                        }
+                    ]
+                )
+                self.stream_called = False
+
+            def iter_chat_stream(self, **kwargs):  # type: ignore[no-untyped-def]
+                self.stream_called = True
+                return super().iter_chat_stream(**kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            backend = Backend()
+            runtime = AgentRuntime(root, llm_backend=backend)
+            result = runtime.send_message("say hello", run_immediately=True)
+            self.assertTrue(result["ok"])
+            self.assertFalse(backend.stream_called)
+            events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
+            response = next(event for event in events if event.get("event_name") == "llm_response_received")
+            self.assertEqual(response["details"]["transport"], "chat_nonstream")
+
+    def test_tool_action_schema_validation_rejects_extra_top_level_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            config = read_json(WorkspacePaths(root).config_path, fallback={})
+            config.setdefault("runtime", {})["json_retry_limit"] = 0
+            write_json(WorkspacePaths(root).config_path, config)
+            backend = FakeBackend(
+                [
+                    '{"assistant_message":"hello","tool_name":"finish","tool_args":{"final_answer":"hello"},"extra":"bad"}',
+                ]
+            )
+            runtime = AgentRuntime(root, llm_backend=backend)
+            runtime.send_message("say hello", run_immediately=True)
+            status = read_json(WorkspacePaths(root).runtime_status_path, fallback={})
+            self.assertEqual(status["last_llm_parse_issue"], "schema_validation_failed")
+            self.assertFalse(status["last_llm_schema_validation"]["ok"])
+            self.assertTrue(status["raw_output_is_machine_json"])
+            self.assertFalse(status["schema_validation_ok"])
+
+    def test_tool_action_retries_json_wrapped_in_markdown_fence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            config = read_json(WorkspacePaths(root).config_path, fallback={})
+            config.setdefault("runtime", {})["json_retry_limit"] = 1
+            write_json(WorkspacePaths(root).config_path, config)
+            backend = FakeBackend(
+                [
+                    '```json\n{"assistant_message":"hello","tool_name":"finish","tool_args":{"final_answer":"hello"}}\n```',
+                    '{"assistant_message":"hello","tool_name":"finish","tool_args":{"final_answer":"hello"}}',
+                ]
+            )
+            runtime = AgentRuntime(root, llm_backend=backend)
+            result = runtime.send_message("say hello", run_immediately=True)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["run"]["last_result"]["final_answer"], "hello")
+            self.assertEqual(read_json(WorkspacePaths(root).runtime_status_path, fallback={})["last_llm_attempt_count"], 2)
+
+    def test_markdown_wrapped_json_records_raw_machine_json_false(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            config = read_json(WorkspacePaths(root).config_path, fallback={})
+            config.setdefault("runtime", {})["json_retry_limit"] = 0
+            write_json(WorkspacePaths(root).config_path, config)
+            backend = FakeBackend(
+                [
+                    '```json\n{"assistant_message":"hello","tool_name":"finish","tool_args":{"final_answer":"hello"}}\n```',
+                ]
+            )
+            runtime = AgentRuntime(root, llm_backend=backend)
+            runtime.send_message("say hello", run_immediately=True)
+            status = read_json(WorkspacePaths(root).runtime_status_path, fallback={})
+            self.assertEqual(status["last_llm_parse_issue"], "json_extraneous_text")
+            self.assertFalse(status["raw_output_is_machine_json"])
+            self.assertTrue(status["schema_validation_ok"])
+
+    def test_runtime_identity_query_bypasses_agent_loop_and_grounding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            backend = FakeBackend([])
+            runtime = AgentRuntime(root, llm_backend=backend)
+            result = runtime.send_message("お名前は？", run_immediately=True)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["route"], "runtime_identity")
+            self.assertEqual(backend.messages_seen, [])
+            status = read_json(WorkspacePaths(root).runtime_status_path, fallback={})
+            self.assertEqual(status["current_role"], "runtime_profile")
+            self.assertIsNone(status["last_llm_parse_issue"])
+            events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
+            assistant = next(event for event in events if event.get("type") == "assistant_message")
+            self.assertEqual(assistant["reason_code"], "runtime_profile_identity")
+
     def test_runtime_tracks_current_stream_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -390,6 +577,110 @@ class RuntimeTests(unittest.TestCase):
             self.assertIn("current_phase", status)
             self.assertIsNone(status["current_started_at"])
             self.assertIsNotNone(status["current_finished_at"])
+
+    def test_runtime_logs_structured_llm_lifecycle_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            backend = FakeBackend(
+                [
+                    '{"assistant_message":"hello","tool_name":"finish","tool_args":{"final_answer":"hello"}}',
+                ]
+            )
+            runtime = AgentRuntime(root, llm_backend=backend)
+            runtime.send_message("say hello", run_immediately=True)
+
+            events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
+            runtime_events = [event for event in events if event.get("type") == "runtime_event"]
+            names = [event.get("event_name") for event in runtime_events]
+
+            self.assertIn("llm_call_started", names)
+            self.assertIn("llm_response_received", names)
+            self.assertIn("llm_call_finished", names)
+            response = next(event for event in runtime_events if event.get("event_name") == "llm_response_received")
+            self.assertEqual(response["details"]["transport"], "chat_nonstream")
+            finished = next(event for event in runtime_events if event.get("event_name") == "llm_call_finished")
+            self.assertEqual(finished["details"]["content_text"], '{"assistant_message":"hello","tool_name":"finish","tool_args":{"final_answer":"hello"}}')
+            self.assertEqual(finished["step_index"], 1)
+
+    def test_runtime_logs_machine_control_response_as_single_nonstream_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            backend = StreamingMetadataBackend(
+                [
+                    {"message": {"content": '{"assistant_message":"'}, "done": False},
+                    {"message": {"content": "hello"}, "done": False},
+                    {"message": {"content": '","tool_name":"finish","tool_args":{"final_answer":"hello"}}'}, "done": True},
+                ]
+            )
+            runtime = AgentRuntime(root, llm_backend=backend)
+            runtime.send_message("say hello", run_immediately=True)
+
+            events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
+            self.assertFalse(any(event.get("event_name") == "llm_stream_chunk" for event in events))
+            response = next(
+                event
+                for event in events
+                if event.get("type") == "runtime_event" and event.get("event_name") == "llm_response_received"
+            )
+            self.assertEqual(
+                response["details"]["content_text"],
+                '{"assistant_message":"hello","tool_name":"finish","tool_args":{"final_answer":"hello"}}',
+            )
+            finished = next(
+                event
+                for event in events
+                if event.get("type") == "runtime_event" and event.get("event_name") == "llm_call_finished"
+            )
+            self.assertIn('"final_answer":"hello"', finished["details"]["content_text"])
+
+    def test_runtime_logs_structured_tool_lifecycle_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            backend = FakeBackend(
+                [
+                    '{"assistant_message":"write","tool_name":"write_file","tool_args":{"path":"hello.txt","content":"hello\\n"}}',
+                    '{"assistant_message":"done","tool_name":"finish","tool_args":{"final_answer":"hello.txt created"}}',
+                ]
+            )
+            runtime = AgentRuntime(root, llm_backend=backend)
+            runtime.send_message("`hello.txt` を作って", run_immediately=True)
+
+            events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
+            runtime_events = [event for event in events if event.get("type") == "runtime_event"]
+            names = [event.get("event_name") for event in runtime_events]
+
+            self.assertIn("tool_call_started", names)
+            self.assertIn("tool_call_finished", names)
+            finished = next(event for event in runtime_events if event.get("event_name") == "tool_call_finished")
+            self.assertEqual(finished["details"]["tool_name"], "write_file")
+            self.assertTrue(finished["details"]["tool_result"]["ok"])
+
+    def test_runtime_creates_operation_for_cli_queue_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            paths = WorkspacePaths(root)
+            backend = FakeBackend(
+                [
+                    '{"assistant_message":"hello","tool_name":"finish","tool_args":{"final_answer":"hello"}}',
+                ]
+            )
+            runtime = AgentRuntime(root, llm_backend=backend)
+            runtime.send_message("say hello", run_immediately=True)
+
+            events = read_jsonl(paths.session_events_path("main"))
+            operations = [event for event in events if event.get("type") == "operation"]
+            self.assertEqual([event.get("status") for event in operations], ["running", "finished"])
+            operation_id = str(operations[0].get("operation_id") or "")
+            self.assertTrue(operation_id)
+            tagged = [event for event in events if event.get("type") in {"user_message", "planning_note", "runtime_event", "assistant_message", "finish"}]
+            self.assertTrue(tagged)
+            self.assertTrue(all(event.get("operation_id") == operation_id for event in tagged))
+            runtime_status = read_json(paths.runtime_status_path, fallback={})
+            self.assertIsNone(runtime_status.get("current_operation_id"))
 
     def test_runtime_blocks_finish_when_requested_commands_not_executed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -434,6 +725,18 @@ class RuntimeTests(unittest.TestCase):
             denied = next(payload for payload in payloads if not payload["ok"])
             self.assertIn("exactly one command per step", denied["error"])
             self.assertFalse(result["run"]["last_result"]["ok"])
+
+    def test_run_command_normalizes_python_to_python3_when_python_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            (root / "script.py").write_text("print('ok')\n", encoding="utf-8")
+            runtime = AgentRuntime(root, llm_backend=FakeBackend([]))
+            result = runtime.tools.execute("run_command", {"command": "python script.py", "shell": "bash"})
+            if result["ok"]:
+                self.assertEqual(result["command"], "python3 script.py")
+                self.assertEqual(result["normalized_from"], "python script.py")
+                self.assertEqual(result["stdout"].strip(), "ok")
 
     def test_runtime_records_reflection_after_failed_turn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -508,6 +811,91 @@ class RuntimeTests(unittest.TestCase):
                 self.assertTrue(ok)
                 self.assertEqual(runtime._last_grounding_judge_trace["decision"], "ok")
                 self.assertEqual(runtime._last_grounding_judge_trace["parsed"]["verdict"], "ok")
+                self.assertEqual(runtime._last_grounding_judge_trace["attempts"][0]["options"]["format"], JUDGE_VERDICT_SCHEMA)
+                self.assertFalse(runtime._last_grounding_judge_trace["attempts"][0]["options"]["think"])
+        finally:
+            AgentRuntime._semantic_grounding_check = original  # type: ignore[assignment]
+
+    def test_grounding_judge_rejects_schema_invalid_verdict(self) -> None:
+        original = AgentRuntime._semantic_grounding_check
+        AgentRuntime._semantic_grounding_check = self.original_semantic_check  # type: ignore[assignment]
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                bootstrap_workspace(root, force=True)
+                runtime = AgentRuntime(
+                    root,
+                    llm_backend=FakeBackend([
+                        '{"verdict":"maybe","reason_code":"supported","unsupported_claims":[],"rationale":"曖昧"}',
+                    ]),
+                )
+                ok = runtime._semantic_grounding_check(
+                    final_answer="cwd is /tmp",
+                    evidence_text='{"stdout":"/tmp"}',
+                    user_message="pwdを確認して",
+                )
+                self.assertFalse(ok)
+                self.assertEqual(runtime._last_grounding_judge_trace["decision"], "invalid_output")
+                self.assertFalse(runtime._last_grounding_judge_trace["attempts"][0]["schema_validation"]["ok"])
+        finally:
+            AgentRuntime._semantic_grounding_check = original  # type: ignore[assignment]
+
+    def test_finish_acceptance_review_uses_json_schema_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            backend = FakeBackend([
+                '{"status":"success","reason_code":"supported","rationale":"観測と一致","observed_mismatch":""}',
+            ])
+            runtime = AgentRuntime(root, llm_backend=backend)
+            review = runtime._semantic_finish_acceptance_review(
+                user_message="結果を表示して",
+                final_answer="ok",
+                evidence_text='[{"tool_name":"run_command","ok":true,"stdout":"ok"}]',
+            )
+            self.assertEqual(review["status"], "success")
+            self.assertEqual(review["attempts"][0]["options"]["format"], FINISH_ACCEPTANCE_SCHEMA)
+            self.assertFalse(review["attempts"][0]["options"]["think"])
+
+    def test_grounding_judge_invalid_json_does_not_block_general_knowledge_chat(self) -> None:
+        original = AgentRuntime._semantic_grounding_check
+        AgentRuntime._semantic_grounding_check = self.original_semantic_check  # type: ignore[assignment]
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                bootstrap_workspace(root, force=True)
+                runtime = AgentRuntime(
+                    root,
+                    llm_backend=FakeBackend(["1. Analyze first, but never emit JSON"]),
+                )
+                ok = runtime._semantic_grounding_check(
+                    final_answer="いいえ、ビートルズとボンジョビは別のバンドです。",
+                    evidence_text="",
+                    user_message="ビートルズってボンジョビ？",
+                )
+                self.assertTrue(ok)
+                self.assertEqual(runtime._last_grounding_judge_trace["decision"], "general_knowledge_fallback")
+        finally:
+            AgentRuntime._semantic_grounding_check = original  # type: ignore[assignment]
+
+    def test_grounding_judge_invalid_json_still_blocks_evidence_required_task(self) -> None:
+        original = AgentRuntime._semantic_grounding_check
+        AgentRuntime._semantic_grounding_check = self.original_semantic_check  # type: ignore[assignment]
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                bootstrap_workspace(root, force=True)
+                runtime = AgentRuntime(
+                    root,
+                    llm_backend=FakeBackend(["1. Analyze first, but never emit JSON"]),
+                )
+                ok = runtime._semantic_grounding_check(
+                    final_answer="ghost-output",
+                    evidence_text="",
+                    user_message="結果を確認して",
+                )
+                self.assertFalse(ok)
+                self.assertEqual(runtime._last_grounding_judge_trace["decision"], "invalid_json")
         finally:
             AgentRuntime._semantic_grounding_check = original  # type: ignore[assignment]
 
@@ -635,7 +1023,7 @@ class RuntimeTests(unittest.TestCase):
             root = Path(tmp)
             bootstrap_workspace(root, force=True)
             config = read_json(WorkspacePaths(root).config_path, fallback={})
-            config.setdefault("runtime", {})["max_steps_per_message"] = 2
+            config.setdefault("runtime", {})["max_steps_per_message"] = 3
             config.setdefault("runtime", {})["json_retry_limit"] = 0
             config.setdefault("runtime", {})["thinking_only_repair_limit"] = 1
             write_json(WorkspacePaths(root).config_path, config)
@@ -760,10 +1148,13 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bootstrap_workspace(root, force=True)
+            maze_program = "print('''#####\n#   #\n### #\n#   #\n#####''')\n"
             backend = FakeBackend(
                 [
-                    '{"assistant_message":"writing","tool_name":"write_file","tool_args":{"path":"maze_gen.py","content":"print(\\"MODEL_MAZE\\")\\n"}}',
+                    json.dumps({"assistant_message": "writing", "tool_name": "write_file", "tool_args": {"path": "maze_gen.py", "content": maze_program}}, ensure_ascii=False),
                     '{"assistant_message":"running","tool_name":"run_command","tool_args":{"command":"python3 maze_gen.py","shell":"bash"}}',
+                    '{"verdict":"ok","reason_code":"supported","unsupported_claims":[],"rationale":"the stdout came from the executed maze script"}',
+                    '{"status":"success","reason_code":"supported","rationale":"the model-created script was executed and its output was displayed","observed_mismatch":""}',
                 ]
             )
             runtime = AgentRuntime(root, llm_backend=backend)
@@ -772,7 +1163,7 @@ class RuntimeTests(unittest.TestCase):
             status = read_json(WorkspacePaths(root).runtime_status_path, fallback={})
             workspace = Path(status["last_llm_workspace"])
             self.assertTrue((workspace / "maze_gen.py").exists())
-            self.assertEqual((workspace / "maze_gen.py").read_text(), 'print("MODEL_MAZE")\n')
+            self.assertEqual((workspace / "maze_gen.py").read_text(), maze_program)
             events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
             tool_calls = [event for event in events if event["type"] == "tool_call"]
             self.assertEqual([event["tool_name"] for event in tool_calls], ["write_file", "run_command"])
@@ -783,7 +1174,8 @@ class RuntimeTests(unittest.TestCase):
                 if event["type"] == "tool_result" and event["tool_name"] == "run_command"
             )
             self.assertTrue(run_result["ok"])
-            self.assertIn("MODEL_MAZE", run_result["stdout"])
+            self.assertIn("#####", run_result["stdout"])
+            self.assertIn("#   #", run_result["stdout"])
 
     def test_terminal_controller_finish_uses_grounded_evidence_without_second_llm_turn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -884,6 +1276,276 @@ class RuntimeTests(unittest.TestCase):
             self.assertTrue(any(note.get("code") == "finish_blocked" for note in system_notes))
             self.assertTrue(any(note.get("reason_code") == "missing_expected_artifacts" for note in system_notes))
 
+    def test_finish_blocked_when_acceptance_review_finds_obvious_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            backend = FakeBackend(
+                [
+                    '{"status":"needs_revision","reason_code":"obvious_mismatch","rationale":"出力が迷路として成立していない","observed_mismatch":"通路や開始終了が確認できない"}',
+                ]
+            )
+            runtime = AgentRuntime(root, llm_backend=backend)
+            acceptance = runtime._finish_acceptance_evaluation(
+                user_message="迷路を作って実行して表示して",
+                final_answer="# # #",
+                steps=[
+                    {"tool_name": "write_file", "tool_result": {"ok": True, "path": "maze.py"}},
+                    {
+                        "tool_name": "run_command",
+                        "tool_result": {
+                            "ok": True,
+                            "command": "python3 maze.py",
+                            "returncode": 0,
+                            "stdout": "# # #\n",
+                            "stderr": "",
+                        },
+                    },
+                ],
+            )
+            self.assertEqual(acceptance["status"], "needs_revision")
+            self.assertEqual(acceptance["semantic_status"], "needs_revision")
+            self.assertEqual(acceptance["review"]["parsed"]["reason_code"], "obvious_mismatch")
+
+    def test_finish_acceptance_review_unavailable_accepts_complete_observable_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            backend = FakeBackend(["レビューJSONではない出力", "まだJSONではない出力"])
+            runtime = AgentRuntime(root, llm_backend=backend)
+            acceptance = runtime._finish_acceptance_evaluation(
+                user_message="迷路を作って実行して表示して",
+                final_answer="maze generated",
+                steps=[
+                    {"tool_name": "write_file", "tool_result": {"ok": True, "path": "maze.py"}},
+                    {
+                        "tool_name": "run_command",
+                        "tool_result": {
+                            "ok": True,
+                            "command": "python3 maze.py",
+                            "returncode": 0,
+                            "stdout": "###\n# #\n###\n",
+                            "stderr": "",
+                        },
+                    },
+                ],
+            )
+            self.assertEqual(acceptance["status"], "success")
+            self.assertEqual(acceptance["semantic_status"], "review_unavailable")
+            self.assertTrue(acceptance["fallback"]["ok"])
+            self.assertEqual(acceptance["fallback"]["reason"], "observable_evidence_complete")
+
+    def test_finish_acceptance_uses_observation_warning_when_judge_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            backend = FakeBackend(["レビューJSONではない出力", "まだJSONではない出力"])
+            runtime = AgentRuntime(root, llm_backend=backend)
+            stdout = "#####\n#   #\n### #\n#   #\n#####\n"
+            acceptance = runtime._finish_acceptance_evaluation(
+                user_message="迷路を作って実行して表示して",
+                final_answer=stdout,
+                steps=[
+                    {"tool_name": "write_file", "tool_result": {"ok": True, "path": "maze.py"}},
+                    {
+                        "tool_name": "run_command",
+                        "tool_result": {
+                            "ok": True,
+                            "command": "python3 maze.py",
+                            "returncode": 0,
+                            "stdout": stdout,
+                            "stderr": "",
+                        },
+                    },
+                ],
+            )
+            # Canonical contract (per p4-symmetry-audit-2026-04-26):
+            # - status stays canonical: "success"
+            # - semantic_status stays canonical: "review_unavailable"
+            # - the override is signalled via a separate field that callers
+            #   translate into a kind=decision event with explicit reason_code.
+            self.assertEqual(acceptance["status"], "success")
+            self.assertEqual(acceptance["semantic_status"], "review_unavailable")
+            self.assertTrue(acceptance["fallback"]["ok"])
+            override = acceptance.get("acceptance_override") or {}
+            self.assertEqual(override.get("reason_code"), "judge_unavailable_observation_accepted")
+            # Effective reason_code surfaced in the canonical decision event.
+            self.assertEqual(
+                runtime._finish_acceptance_reason_code(acceptance),
+                "judge_unavailable_observation_accepted",
+            )
+
+    def test_finish_acceptance_evaluation_uses_only_canonical_values(self) -> None:
+        """Design-invariant test (p4-symmetry-audit-2026-04-26).
+
+        finish acceptance evaluation must only produce canonical status and
+        semantic_status values. Any new asymmetric value (e.g. an ad-hoc
+        "accepted_with_warning") must be lifted to a higher-level decision
+        event instead.
+        """
+        canonical_statuses = {"success", "partial_success", "needs_revision"}
+        canonical_semantic = {
+            "unchecked",
+            "not_required",
+            "reviewed",
+            "needs_revision",
+            "partial_success",
+            "review_unavailable",
+        }
+        scenarios = [
+            # judge returns invalid output, evidence complete (override path)
+            (
+                FakeBackend(["レビューJSONではない出力", "まだJSONではない出力"]),
+                "迷路を作って実行して表示して",
+                "#####\n#   #\n### #\n#   #\n#####\n",
+                [
+                    {"tool_name": "write_file", "tool_result": {"ok": True, "path": "maze.py"}},
+                    {
+                        "tool_name": "run_command",
+                        "tool_result": {
+                            "ok": True,
+                            "command": "python3 maze.py",
+                            "returncode": 0,
+                            "stdout": "#####\n#   #\n### #\n#   #\n#####\n",
+                            "stderr": "",
+                        },
+                    },
+                ],
+            ),
+            # judge returns invalid output, no observation evidence
+            (
+                FakeBackend(["bad", "still bad"]),
+                "ファイルの中身を確認して",
+                "no answer",
+                [],
+            ),
+        ]
+        for backend, user_message, final_answer, steps in scenarios:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                bootstrap_workspace(root, force=True)
+                runtime = AgentRuntime(root, llm_backend=backend)
+                acceptance = runtime._finish_acceptance_evaluation(
+                    user_message=user_message,
+                    final_answer=final_answer,
+                    steps=steps,
+                )
+                self.assertIn(acceptance["status"], canonical_statuses)
+                self.assertIn(acceptance["semantic_status"], canonical_semantic)
+
+    def test_decision_status_from_finish_acceptance_event_is_canonical(self) -> None:
+        """Canonical decision events must be one of accepted|blocked|failed."""
+        from p4_core.workspace import _canonical_event_from_session_event
+
+        canonical = {"accepted", "blocked", "failed"}
+        cases = [
+            {"reason_code": "reviewed", "expected": "accepted"},
+            {"reason_code": "not_required", "expected": "accepted"},
+            {"reason_code": "judge_unavailable_observation_accepted", "expected": "accepted"},
+            {"reason_code": "review_unavailable", "expected": "blocked"},
+            {"reason_code": "needs_revision", "expected": "blocked"},
+            {"reason_code": "partial_success", "expected": "blocked"},
+        ]
+        for case in cases:
+            session_event = {
+                "type": "system_note",
+                "code": "finish_acceptance",
+                "reason_code": case["reason_code"],
+                "content": "test",
+            }
+            canonical_event = _canonical_event_from_session_event(session_event)
+            self.assertIsNotNone(canonical_event)
+            self.assertEqual(canonical_event["kind"], "decision")
+            self.assertIn(canonical_event["status"], canonical)
+            self.assertEqual(canonical_event["status"], case["expected"])
+
+    def test_activity_update_status_is_payload_variation_not_canonical_status(self) -> None:
+        from p4_core.workspace import _canonical_event_from_session_event
+
+        for raw_status in ["info", "success", "error", "blocked"]:
+            canonical_event = _canonical_event_from_session_event(
+                {
+                    "type": "activity_update",
+                    "status": raw_status,
+                    "content": "dashboard activity",
+                }
+            )
+            self.assertIsNotNone(canonical_event)
+            self.assertEqual(canonical_event["kind"], "observation")
+            self.assertEqual(canonical_event["status"], "finished")
+            self.assertEqual(canonical_event["payload"]["raw_status"], raw_status)
+
+    def test_extract_json_object_ignores_braces_inside_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            runtime = AgentRuntime(root, llm_backend=FakeBackend([]))
+            payload = runtime._extract_json_object('prefix {"status":"success","text":"brace } in string"} suffix')
+            self.assertEqual(json.loads(payload or "{}")["status"], "success")
+
+    def test_similar_command_warning_does_not_block_changed_python_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            runtime = AgentRuntime(root, llm_backend=FakeBackend([]))
+            warning = runtime._similar_command_warning(
+                tool_args={"command": "python3 maze_generator.py"},
+                steps=[
+                    {
+                        "tool_name": "run_command",
+                        "tool_result": {"ok": False, "command": "python maze_generator.py"},
+                    }
+                ],
+            )
+            self.assertIsNone(warning)
+
+    def test_controller_finish_does_not_repeat_same_acceptance_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            fixed_maze_program = "print('''#####\n#   #\n### #\n#   #\n#####''')\n"
+            backend = FakeBackend(
+                [
+                    '{"assistant_message":"write bad","tool_name":"write_file","tool_args":{"path":"maze.py","content":"print(\\"bad\\")\\n"}}',
+                    '{"assistant_message":"run bad","tool_name":"run_command","tool_args":{"command":"python3 maze.py","shell":"bash"}}',
+                    '{"assistant_message":"done bad","tool_name":"finish","tool_args":{"final_answer":"bad"}}',
+                    '{"status":"needs_revision","reason_code":"obvious_mismatch","rationale":"displayed output does not satisfy the requested artifact","observed_mismatch":"bad output"}',
+                    json.dumps({"assistant_message": "write fixed", "tool_name": "write_file", "tool_args": {"path": "maze.py", "content": fixed_maze_program}}, ensure_ascii=False),
+                    '{"assistant_message":"run fixed","tool_name":"run_command","tool_args":{"command":"python3 maze.py","shell":"bash"}}',
+                    '{"assistant_message":"done fixed","tool_name":"finish","tool_args":{"final_answer":"fixed output displayed"}}',
+                    '{"status":"success","reason_code":"supported","rationale":"corrected output was displayed","observed_mismatch":""}',
+                ]
+            )
+            runtime = AgentRuntime(root, llm_backend=backend)
+            result = runtime.send_message("迷路を作って実行して表示して", run_immediately=True)
+
+            self.assertTrue(result["run"]["last_result"]["ok"])
+            events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
+            blocked = [event for event in events if event.get("reason_code") == "finish_acceptance_failed"]
+            self.assertEqual(len(blocked), 1)
+            tool_calls = [event.get("tool_name") for event in events if event.get("type") == "tool_call"]
+            self.assertEqual(tool_calls, ["write_file", "run_command", "write_file", "run_command"])
+
+    def test_finish_records_success_acceptance_when_review_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            maze_program = "print('''#####\n#   #\n### #\n#   #\n#####''')\n"
+            backend = FakeBackend(
+                [
+                    json.dumps({"assistant_message": "write maze", "tool_name": "write_file", "tool_args": {"path": "maze.py", "content": maze_program}}, ensure_ascii=False),
+                    '{"assistant_message":"run maze","tool_name":"run_command","tool_args":{"command":"python3 maze.py","shell":"bash"}}',
+                    '{"status":"success","reason_code":"supported","rationale":"stdout contains displayed maze endpoints","observed_mismatch":""}',
+                ]
+            )
+            runtime = AgentRuntime(root, llm_backend=backend)
+            result = runtime.send_message("迷路を作って実行して表示して", run_immediately=True)
+            self.assertTrue(result["run"]["last_result"]["ok"])
+            events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
+            acceptance = next(event for event in events if event.get("code") == "finish_acceptance")
+            self.assertEqual(acceptance["details"]["status"], "success")
+            self.assertEqual(acceptance["details"]["semantic_status"], "reviewed")
+
     def test_successful_turn_clears_stale_runtime_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -954,9 +1616,6 @@ class RuntimeTests(unittest.TestCase):
             backend = FakeBackend(
                 [
                     json.dumps({"assistant_message": "split", "tool_name": "open_child_frame", "tool_args": {"work_package": work_package("Read notes", tool="read_file", args={"path": "notes.txt"}, evidence="notes content read")}}),
-                    '{"assistant_message":"read","tool_name":"read_file","tool_args":{"path":"notes.txt"}}',
-                    '{"assistant_message":"bad finish","tool_name":"finish","tool_args":{"final_answer":"alpha"}}',
-                    '{"assistant_message":"return","tool_name":"return_to_parent","tool_args":{"summary":"notes contain alpha","findings":["alpha"]}}',
                     '{"assistant_message":"done","tool_name":"finish","tool_args":{"final_answer":"notes contain alpha"}}',
                 ]
             )
@@ -1013,7 +1672,7 @@ class RuntimeTests(unittest.TestCase):
             root = Path(tmp)
             bootstrap_workspace(root, force=True)
             config = read_json(WorkspacePaths(root).config_path, fallback={})
-            config.setdefault("runtime", {})["max_steps_per_message"] = 6
+            config.setdefault("runtime", {})["max_steps_per_message"] = 9
             write_json(WorkspacePaths(root).config_path, config)
             backend = FakeBackend(
                 [
@@ -1046,14 +1705,16 @@ class RuntimeTests(unittest.TestCase):
                             },
                         }
                     ),
-                    '{"assistant_message":"return discovery","tool_name":"return_to_parent","tool_args":{"summary":"requirements collected","findings":["ascii maze"]}}',
+                    '{"assistant_message":"list discovery","tool_name":"list_files","tool_args":{"path":"."}}',
                     '{"assistant_message":"open next","tool_name":"open_child_frame","tool_args":{}}',
-                    '{"assistant_message":"return execution","tool_name":"return_to_parent","tool_args":{"summary":"maze executed","findings":["output collected"]}}',
+                    '{"assistant_message":"write maze","tool_name":"write_file","tool_args":{"path":"maze.py","content":"print(\'maze\')\\n"}}',
                     '{"assistant_message":"done","tool_name":"finish","tool_args":{"final_answer":"requirements collected and maze executed"}}',
+                    '{"verdict":"ok","reason_code":"supported","unsupported_claims":[],"rationale":"child return evidence supports the final answer"}',
+                    '{"status":"success","reason_code":"supported","rationale":"child returns satisfy the user request","observed_mismatch":""}',
                 ]
             )
             runtime = AgentRuntime(root, llm_backend=backend)
-            result = runtime.send_message("迷路作成を良い単位で分割して実行して", run_immediately=True)
+            result = runtime.send_message("作業を良い単位で分割して実行して", run_immediately=True)
 
             self.assertTrue(result["ok"])
             events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
@@ -1122,6 +1783,32 @@ class RuntimeTests(unittest.TestCase):
             self.assertFalse(any(event.get("type") == "task_plan" for event in events))
             self.assertFalse(any(event.get("type") == "frame_opened" for event in events))
 
+    def test_child_frame_with_tool_evidence_must_return_before_redecomposing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            config = read_json(WorkspacePaths(root).config_path, fallback={})
+            config.setdefault("runtime", {})["max_steps_per_message"] = 2
+            write_json(WorkspacePaths(root).config_path, config)
+            backend = FakeBackend(
+                [
+                    json.dumps({"assistant_message": "open", "tool_name": "open_child_frame", "tool_args": {"work_package": work_package("inspect files", args={"path": "."})}}),
+                    '{"assistant_message":"list","tool_name":"list_files","tool_args":{"path":"."}}',
+                ]
+            )
+            runtime = AgentRuntime(root, llm_backend=backend)
+            runtime.send_message("子フレームのfirst_action成功後に自動帰還する", run_immediately=True)
+
+            events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
+            self.assertTrue(any(event.get("type") == "frame_returned" for event in events))
+            child_returns = [event for event in events if event.get("type") == "child_return"]
+            self.assertEqual(len(child_returns), 1)
+            self.assertIn("first_action succeeded", child_returns[0]["content"])
+            current = runtime.frame_manager.current_frame()
+            self.assertIsNotNone(current)
+            self.assertIsNone(current.parent_frame_id)
+            self.assertFalse(any(event.get("type") == "task_plan" for event in events))
+
     def test_frame_action_goals_are_not_extracted_as_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1132,30 +1819,25 @@ class RuntimeTests(unittest.TestCase):
             )
             self.assertEqual(commands, ["pwd"])
 
-    def test_frame_depth_limit_blocks_opening_beyond_depth_four(self) -> None:
+    def test_child_frame_first_action_auto_executes_before_another_child_can_open(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bootstrap_workspace(root, force=True)
             config = read_json(WorkspacePaths(root).config_path, fallback={})
-            config.setdefault("runtime", {})["max_steps_per_message"] = 6
+            config.setdefault("runtime", {})["max_steps_per_message"] = 2
             write_json(WorkspacePaths(root).config_path, config)
             backend = FakeBackend(
                 [
-                    json.dumps({"assistant_message": "open1", "tool_name": "open_child_frame", "tool_args": {"work_package": work_package("d1")}}),
-                    json.dumps({"assistant_message": "open2", "tool_name": "open_child_frame", "tool_args": {"work_package": work_package("d2")}}),
-                    json.dumps({"assistant_message": "open3", "tool_name": "open_child_frame", "tool_args": {"work_package": work_package("d3")}}),
-                    json.dumps({"assistant_message": "open4", "tool_name": "open_child_frame", "tool_args": {"work_package": work_package("d4")}}),
-                    json.dumps({"assistant_message": "open5", "tool_name": "open_child_frame", "tool_args": {"work_package": work_package("d5")}}),
-                    '{"assistant_message":"return","tool_name":"return_to_parent","tool_args":{"summary":"blocked","findings":["depth"]}}',
+                    json.dumps({"assistant_message": "open1", "tool_name": "open_child_frame", "tool_args": {"work_package": work_package("d1", args={"path": "."})}}),
+                    json.dumps({"assistant_message": "open2", "tool_name": "open_child_frame", "tool_args": {"work_package": work_package("d2", args={"path": "."})}}),
                 ]
             )
-            runtime = AgentRuntime(root, llm_backend=backend)
-            runtime.send_message("深く分解して", run_immediately=True)
+            AgentRuntime(root, llm_backend=backend).send_message("子フレーム開始直後にさらに分解しようとする", run_immediately=True)
 
             events = read_jsonl(WorkspacePaths(root).session_events_path("main"))
-            blocked = [event for event in events if event.get("code") == "frame_open_blocked"]
-            self.assertEqual(len(blocked), 1)
-            self.assertIn("depth limit", blocked[0]["content"])
+            self.assertFalse(any(event.get("code") == "first_action_required" for event in events))
+            self.assertEqual(len([event for event in events if event.get("type") == "frame_opened"]), 2)
+            self.assertEqual(len([event for event in events if event.get("type") == "child_return"]), 2)
 
     def test_child_frame_step_safety_valve_returns_to_parent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1165,10 +1847,10 @@ class RuntimeTests(unittest.TestCase):
             config.setdefault("runtime", {})["max_steps_per_message"] = 18
             write_json(WorkspacePaths(root).config_path, config)
             responses = [
-                json.dumps({"assistant_message": "open", "tool_name": "open_child_frame", "tool_args": {"work_package": work_package("loop child", evidence="safety valve")}}),
+                json.dumps({"assistant_message": "open", "tool_name": "open_child_frame", "tool_args": {"work_package": work_package("loop child", tool="read_file", args={"path": "notes.txt"}, evidence="safety valve")}}),
             ]
             responses.extend(
-                '{"assistant_message":"list","tool_name":"list_files","tool_args":{"path":"."}}'
+                '{"assistant_message":"premature finish","tool_name":"finish","tool_args":{"final_answer":"not yet"}}'
                 for _ in range(16)
             )
             runtime = AgentRuntime(root, llm_backend=FakeBackend(responses))

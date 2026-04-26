@@ -11,7 +11,7 @@ from pathlib import Path
 
 from p4_core.dashboard import create_dashboard_server
 from p4_core.models import ModelRouter
-from p4_core.workspace import bootstrap_workspace
+from p4_core.workspace import WorkspacePaths, append_jsonl, bootstrap_workspace, write_json
 
 
 class DashboardTests(unittest.TestCase):
@@ -102,7 +102,6 @@ class DashboardTests(unittest.TestCase):
                 html = response.read().decode("utf-8")
                 self.assertEqual(response.status, 200)
                 self.assertIn("P4 ダッシュボード", html)
-                self.assertIn("進捗ログ", html)
                 self.assertIn("実行操作", html)
                 self.assertIn("メッセージ送信", html)
                 self.assertNotIn("現在の実行", html)
@@ -112,7 +111,8 @@ class DashboardTests(unittest.TestCase):
                 self.assertNotIn('id="currentRunMessage"', html)
                 self.assertIn("function renderSnapshot(snapshot)", html)
                 self.assertIn('id="operationsPanel"', html)
-                self.assertIn('id="updatesPanel"', html)
+                self.assertNotIn('id="updatesPanel"', html)
+                self.assertNotIn("進捗ログ", html)
                 self.assertNotIn('id="framesPanel"', html)
                 self.assertNotIn("フレーム階層", html)
                 self.assertIn("flow-phase", html)
@@ -167,8 +167,11 @@ class DashboardTests(unittest.TestCase):
             snapshot = build_snapshot(root)
             operations = snapshot.get("recent_operations") or []
             self.assertEqual(len(operations), 1)
-            self.assertEqual(operations[0]["status"], "failed")
-            self.assertEqual(operations[0]["finished_at"], "2026-04-18T10:01:00+00:00")
+            # Canonical operation status is "started" (legacy "running" is
+            # normalized at the canonical event boundary; UI must not silently
+            # downgrade it to "failed" — see p4-event-contract-audit-2026-04-24).
+            self.assertEqual(operations[0]["status"], "started")
+            self.assertIsNone(operations[0]["finished_at"])
 
     def test_snapshot_normalizes_older_running_operation_when_new_run_is_active(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -217,8 +220,8 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(len(operations), 2)
             current = next(item for item in operations if item["operation_id"] == "op-current")
             stale = next(item for item in operations if item["operation_id"] == "op-old")
-            self.assertEqual(current["status"], "running")
-            self.assertEqual(stale["status"], "failed")
+            self.assertEqual(current["status"], "started")
+            self.assertEqual(stale["status"], "started")
 
     def test_snapshot_keeps_runtime_current_operation_running_with_live_stream(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -264,15 +267,14 @@ class DashboardTests(unittest.TestCase):
 
             snapshot = build_snapshot(root)
             operation = snapshot["recent_operations"][0]
-            self.assertEqual(operation["status"], "running")
+            self.assertEqual(operation["status"], "started")
             live_items = [
                 item
                 for step in operation["flow_steps"]
                 for item in step.get("items", [])
                 if item.get("label") == "live_stream"
             ]
-            self.assertEqual(len(live_items), 1)
-            self.assertIn("Beatles", live_items[0]["content"])
+            self.assertEqual(len(live_items), 0)
             html = render_dashboard_html(snapshot)
             self.assertIn("LLMライブ", html)
 
@@ -308,9 +310,9 @@ class DashboardTests(unittest.TestCase):
 
             snapshot = build_snapshot(root)
             operation = snapshot["recent_operations"][0]
-            self.assertEqual(operation["status"], "failed")
-            self.assertIn("stale output", operation["output_preview"])
-            self.assertIn("no active worker and no recent activity", operation["detail"])
+            self.assertEqual(operation["status"], "started")
+            self.assertNotIn("stale output", str(operation.get("output_preview") or ""))
+            self.assertNotIn("no active worker and no recent activity", str(operation.get("detail") or ""))
 
     def test_snapshot_renders_frame_events_inside_operation_flow(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -343,6 +345,8 @@ class DashboardTests(unittest.TestCase):
                     "parent_frame_id": "root-1",
                     "goal": "Inspect notes",
                     "content": "Opened child frame: Inspect notes",
+                    "depth": 1,
+                    "operation_id": "op-frame",
                     "turn_id": "turn-frame",
                     "step_index": 1,
                 },
@@ -357,6 +361,8 @@ class DashboardTests(unittest.TestCase):
                     "parent_frame_id": "root-1",
                     "return_payload": {"summary": "notes inspected", "findings": ["alpha"]},
                     "content": "Returned to parent frame: notes inspected",
+                    "depth": 1,
+                    "operation_id": "op-frame",
                     "turn_id": "turn-frame",
                     "step_index": 2,
                 },
@@ -370,6 +376,7 @@ class DashboardTests(unittest.TestCase):
                     "child_frame_id": "child-1",
                     "return_payload": {"summary": "notes inspected", "findings": ["alpha"]},
                     "content": "notes inspected",
+                    "operation_id": "op-frame",
                     "turn_id": "turn-frame",
                     "step_index": 2,
                 },
@@ -396,13 +403,9 @@ class DashboardTests(unittest.TestCase):
                 for step in operation["flow_steps"]
                 for item in step.get("items", [])
             ]
-            self.assertIn("frame_opened", labels)
-            self.assertIn("frame_returned", labels)
-            self.assertIn("child_return", labels)
+            self.assertIn("frame", labels)
             html = render_dashboard_html(snapshot)
-            self.assertIn("フレーム開始", html)
-            self.assertIn("フレーム帰還", html)
-            self.assertIn("子フレーム結果", html)
+            self.assertIn("フレーム", html)
             self.assertIn("Inspect notes", html)
             self.assertNotIn("フレーム階層", html)
 
@@ -432,9 +435,15 @@ class DashboardTests(unittest.TestCase):
                 root,
                 session_id,
                 {
-                    "type": "assistant_message",
-                    "role": "assistant",
+                    "type": "runtime_event",
+                    "role": "system",
+                    "operation_id": "op-long",
+                    "event_name": "llm_call_finished",
                     "content": long_output,
+                    "details": {
+                        "model": "gemma4:26b",
+                        "content_text": long_output,
+                    },
                     "turn_id": "turn-long",
                     "step_index": 1,
                 },
@@ -452,6 +461,376 @@ class DashboardTests(unittest.TestCase):
             self.assertIn(".flow-content { background: #0c1013; padding: 8px; border-radius: 4px; border: 1px solid #1f272e; max-height: 420px; overflow: auto; }", html)
             self.assertIn(".operation-output { max-height: 520px; overflow: auto;", html)
             self.assertIn(".operation-output .flow-content { max-height: none; overflow: visible; }", html)
+            self.assertIn("--flow-llm: #5b8def;", html)
+            self.assertIn(".flow-item.llm .flow-content { border-left: 3px solid var(--flow-llm);", html)
+            self.assertIn(".flow-item.decision .flow-content { border-left: 3px solid var(--flow-system);", html)
+            self.assertIn(".flow-item.tool .flow-content { border-left: 3px solid var(--flow-tool);", html)
+
+    def test_dashboard_shows_judge_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            from p4_core.dashboard import build_snapshot, render_dashboard_html
+            from p4_core.workspace import active_session_id, append_session_event
+
+            session_id = active_session_id(root)
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "system_note",
+                    "role": "system",
+                    "content": "完了受理判定: accepted_with_warning",
+                    "code": "finish_acceptance",
+                    "reason_code": "review_unavailable_observation_accepted",
+                    "details": {
+                        "status": "accepted_with_warning",
+                        "semantic_status": "review_unavailable_observation_accepted",
+                        "review": {"retry_count": 1},
+                    },
+                },
+            )
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "system_note",
+                    "role": "system",
+                    "content": "完了がブロックされました",
+                    "code": "finish_blocked",
+                    "reason_code": "finish_acceptance_failed",
+                },
+            )
+
+            snapshot = build_snapshot(root)
+            self.assertEqual(snapshot["judge_metrics"]["consecutive_finish_blocks"], 1)
+            self.assertEqual(snapshot["judge_metrics"]["judge_retry_count"], 1)
+            self.assertTrue(snapshot["judge_metrics"]["fallback_used"])
+            html = render_dashboard_html(snapshot)
+            self.assertIn("judge: blocks=1", html)
+            self.assertIn("fallback=yes", html)
+
+    def test_dashboard_renders_structured_runtime_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            from p4_core.dashboard import build_snapshot, render_dashboard_html
+            from p4_core.workspace import active_session_id, append_session_event
+
+            session_id = active_session_id(root)
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "operation",
+                    "role": "system",
+                    "operation_id": "op-runtime",
+                    "title": "Terminal agent",
+                    "detail": "structured runtime event",
+                    "status": "running",
+                    "started_at": "2026-04-18T10:00:00+00:00",
+                },
+            )
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "runtime_event",
+                    "role": "system",
+                    "operation_id": "op-runtime",
+                    "event_name": "llm_call_finished",
+                    "content": "[content]\nhello",
+                    "details": {
+                        "model": "devstral",
+                        "attempt_count": 1,
+                        "content_text": "hello",
+                    },
+                    "turn_id": "turn-runtime",
+                    "step_index": 1,
+                },
+            )
+
+            snapshot = build_snapshot(root)
+            operation = snapshot["recent_operations"][0]
+            labels = [
+                item["label"]
+                for step in operation["flow_steps"]
+                for item in step.get("items", [])
+            ]
+            self.assertIn("llm", labels)
+            html = render_dashboard_html(snapshot)
+            self.assertIn("LLM", html)
+            self.assertIn("llm_call_finished", html)
+            self.assertIn("devstral", html)
+
+    def test_dashboard_renders_task_plan_flow_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            from p4_core.dashboard import build_snapshot, render_dashboard_html
+            from p4_core.workspace import active_session_id, append_session_event
+
+            session_id = active_session_id(root)
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "operation",
+                    "role": "system",
+                    "operation_id": "op-plan",
+                    "title": "Terminal agent",
+                    "detail": "task plan",
+                    "status": "running",
+                    "started_at": "2026-04-18T10:00:00+00:00",
+                },
+            )
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "task_plan",
+                    "role": "system",
+                    "operation_id": "op-plan",
+                    "content": "Planned 2 child tasks.",
+                    "rationale": "separate inspect and execute",
+                    "tasks": [
+                        {"task_id": "task-1", "goal": "inspect"},
+                        {"task_id": "task-2", "goal": "execute"},
+                    ],
+                    "turn_id": "turn-plan",
+                    "step_index": 1,
+                },
+            )
+
+            snapshot = build_snapshot(root)
+            operation = snapshot["recent_operations"][0]
+            labels = [
+                item["label"]
+                for step in operation["flow_steps"]
+                for item in step.get("items", [])
+            ]
+            self.assertIn("decision", labels)
+            html = render_dashboard_html(snapshot)
+            self.assertIn("判定", html)
+            self.assertIn("separate inspect and execute", html)
+            self.assertIn("task-2", html)
+
+    def test_operation_window_prefers_operation_id_over_time_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            from p4_core.dashboard import build_snapshot
+            from p4_core.workspace import active_session_id, append_session_event
+
+            session_id = active_session_id(root)
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "operation",
+                    "role": "system",
+                    "operation_id": "op-a",
+                    "title": "A",
+                    "detail": "A",
+                    "status": "success",
+                    "started_at": "2026-04-18T10:00:00+00:00",
+                    "finished_at": "2026-04-18T10:00:01+00:00",
+                },
+            )
+            append_session_event(root, session_id, {"type": "finish", "role": "assistant", "operation_id": "op-a", "content": "A", "step_index": 1})
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "operation",
+                    "role": "system",
+                    "operation_id": "op-b",
+                    "title": "B",
+                    "detail": "B",
+                    "status": "success",
+                    "started_at": "2026-04-18T10:00:01+00:00",
+                    "finished_at": "2026-04-18T10:00:02+00:00",
+                },
+            )
+            append_session_event(root, session_id, {"type": "finish", "role": "assistant", "operation_id": "op-b", "content": "B", "step_index": 1})
+
+            snapshot = build_snapshot(root)
+            by_title = {operation["title"]: operation for operation in snapshot["recent_operations"]}
+            labels_a = [item["content"] for step in by_title["A"]["flow_steps"] for item in step["items"] if item["label"] == "decision"]
+            labels_b = [item["content"] for step in by_title["B"]["flow_steps"] for item in step["items"] if item["label"] == "decision"]
+            self.assertEqual(labels_a, ["A"])
+            self.assertEqual(labels_b, ["B"])
+
+    def test_canonical_stream_events_stay_in_live_output_not_flow_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            from p4_core.dashboard import build_snapshot
+            from p4_core.workspace import active_session_id, append_session_event
+
+            session_id = active_session_id(root)
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "operation",
+                    "role": "system",
+                    "operation_id": "op-canonical-stream",
+                    "title": "Terminal agent",
+                    "detail": "canonical stream run",
+                    "status": "running",
+                    "started_at": "2026-04-18T10:00:00+00:00",
+                },
+            )
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "runtime_event",
+                    "role": "system",
+                    "operation_id": "op-canonical-stream",
+                    "event_name": "llm_stream_chunk",
+                    "content": "streaming answer",
+                    "details": {"content_text": "streaming answer"},
+                    "turn_id": "turn-canonical-stream",
+                    "step_index": 1,
+                },
+            )
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "runtime_event",
+                    "role": "system",
+                    "operation_id": "op-canonical-stream",
+                    "event_name": "llm_call_started",
+                    "content": "llm started",
+                    "details": {},
+                    "turn_id": "turn-canonical-stream",
+                    "step_index": 2,
+                },
+            )
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "runtime_event",
+                    "role": "system",
+                    "operation_id": "op-canonical-stream",
+                    "event_name": "llm_stream_chunk",
+                    "content": " plus more",
+                    "details": {"delta_content": " plus more", "content_text": " plus more"},
+                    "turn_id": "turn-canonical-stream",
+                    "step_index": 1,
+                },
+            )
+            append_session_event(
+                root,
+                session_id,
+                {
+                    "type": "runtime_event",
+                    "role": "system",
+                    "operation_id": "op-canonical-stream",
+                    "event_name": "llm_call_finished",
+                    "content": "final answer",
+                    "details": {"content_text": "final answer"},
+                    "turn_id": "turn-canonical-stream",
+                    "step_index": 2,
+                },
+            )
+            paths = WorkspacePaths(root)
+            runtime = json.loads(paths.runtime_status_path.read_text(encoding="utf-8"))
+            runtime["status"] = "running"
+            runtime["current_operation_id"] = "op-canonical-stream"
+            runtime["current_stream_text"] = "live text from runtime"
+            write_json(paths.runtime_status_path, runtime)
+
+            snapshot = build_snapshot(root)
+            operation = snapshot["recent_operations"][0]
+            self.assertEqual(operation["output_preview"], "live text from runtime")
+            self.assertEqual(snapshot["recent_updates"], [])
+            stream_items = [
+                item
+                for step in operation["flow_steps"]
+                for item in step.get("items", [])
+                if item.get("label") in {"llm", "tool"} and item.get("status") == "stream"
+            ]
+            self.assertEqual(stream_items, [])
+            started_items = [
+                item
+                for step in operation["flow_steps"]
+                for item in step.get("items", [])
+                if item.get("label") == "llm" and item.get("status") == "started"
+            ]
+            self.assertEqual(started_items, [])
+            finished_items = [
+                item
+                for step in operation["flow_steps"]
+                for item in step.get("items", [])
+                if item.get("label") == "llm" and item.get("status") == "finished"
+            ]
+            self.assertEqual(len(finished_items), 1)
+
+    def test_fallback_stream_events_do_not_split_operation_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            from p4_core.dashboard import build_snapshot
+            from p4_core.workspace import active_session_id
+
+            session_id = active_session_id(root)
+            paths = WorkspacePaths(root)
+            append_jsonl(
+                paths.session_events_path(session_id),
+                {
+                    "type": "operation",
+                    "role": "system",
+                    "operation_id": "op-fallback-stream",
+                    "title": "Terminal agent",
+                    "detail": "fallback stream run",
+                    "status": "running",
+                    "started_at": "2026-04-18T10:00:00+00:00",
+                    "timestamp": "2026-04-18T10:00:00+00:00",
+                },
+            )
+            append_jsonl(
+                paths.session_events_path(session_id),
+                {
+                    "type": "runtime_event",
+                    "role": "system",
+                    "operation_id": "op-fallback-stream",
+                    "event_name": "llm_stream_chunk",
+                    "content": "fallback live output",
+                    "details": {"content_text": "fallback live output"},
+                    "turn_id": "turn-fallback-stream",
+                    "step_index": 1,
+                    "timestamp": "2026-04-18T10:00:01+00:00",
+                },
+            )
+            runtime = json.loads(paths.runtime_status_path.read_text(encoding="utf-8"))
+            runtime["status"] = "running"
+            runtime["worker_running"] = True
+            runtime["current_operation_id"] = "op-fallback-stream"
+            runtime["current_stream_text"] = "fallback live output"
+            runtime["last_event_at"] = "2026-04-18T10:00:01+00:00"
+            write_json(paths.runtime_status_path, runtime)
+
+            snapshot = build_snapshot(root)
+            operation = snapshot["recent_operations"][0]
+            live_items = [
+                item
+                for step in operation["flow_steps"]
+                for item in step.get("items", [])
+                if item.get("label") == "live_stream"
+            ]
+            runtime_stream_items = [
+                item
+                for step in operation["flow_steps"]
+                for item in step.get("items", [])
+                if item.get("label") == "runtime_event" and item.get("event_name") == "llm_stream_chunk"
+            ]
+            self.assertEqual(len(live_items), 1)
+            self.assertEqual(runtime_stream_items, [])
 
 
 class ModelNormalizationTests(unittest.TestCase):

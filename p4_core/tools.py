@@ -282,6 +282,10 @@ class ToolExecutor:
         for pattern in DANGEROUS_COMMAND_PATTERNS:
             if re.search(pattern, clean):
                 raise ValueError(f"command denied by safety policy: {clean}")
+        normalized_from = ""
+        if re.match(r"^python(\s+.+)?$", clean) and shutil.which("python") is None and shutil.which("python3") is not None:
+            normalized_from = clean
+            clean = re.sub(r"^python(\s+|$)", "python3\\1", clean, count=1)
         argv, resolved_shell = self._command_argv(clean, shell_name)
         started_at = time.time()
         started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started_at))
@@ -338,27 +342,29 @@ class ToolExecutor:
                 "ok": False,
                 "tool": "run_command",
                 "command": clean,
+                "normalized_from": normalized_from,
                 "shell": resolved_shell,
                 "cwd": str(self.root),
                 "started_at": started_iso,
                 "finished_at": finished_iso,
                 "duration_ms": duration_ms,
                 "returncode": None,
-                "stdout": "".join(stdout_chunks)[-4000:],
-                "stderr": ("".join(stderr_chunks) + f"\nTimed out after {timeout_seconds}s")[-4000:],
+                "stdout": "".join(stdout_chunks),
+                "stderr": "".join(stderr_chunks) + f"\nTimed out after {timeout_seconds}s",
             }
         return {
             "ok": returncode == 0,
             "tool": "run_command",
             "command": clean,
+            "normalized_from": normalized_from,
             "shell": resolved_shell,
             "cwd": str(self.root),
             "started_at": started_iso,
             "finished_at": finished_iso,
             "duration_ms": duration_ms,
             "returncode": returncode,
-            "stdout": "".join(stdout_chunks)[-4000:],
-            "stderr": "".join(stderr_chunks)[-4000:],
+            "stdout": "".join(stdout_chunks),
+            "stderr": "".join(stderr_chunks),
         }
 
     def _command_argv(self, command: str, shell_name: str) -> tuple[list[str], str]:

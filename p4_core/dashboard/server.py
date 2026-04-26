@@ -143,6 +143,19 @@ def _append_activity_update(root: Path, session_id: str, message: str, *, status
 def _append_operation_event(root: Path, session_id: str, *, operation_id: str, title: str, detail: str, status: str, started_at: str | None = None, finished_at: str | None = None, duration_ms: int | None = None, output_preview: str | None = None) -> None:
     append_session_event(root, session_id, {"type": "operation", "role": "system", "operation_id": operation_id, "title": title, "detail": detail, "status": status, "started_at": started_at, "finished_at": finished_at, "duration_ms": duration_ms, "output_preview": output_preview})
 
+def _append_runtime_event(root: Path, session_id: str, *, operation_id: str, event_name: str, content: str = "", details: dict[str, Any] | None = None, step_index: int | None = None) -> None:
+    payload: dict[str, Any] = {
+        "type": "runtime_event",
+        "role": "system",
+        "operation_id": operation_id,
+        "event_name": event_name,
+        "content": str(content or ""),
+        "details": details or {},
+    }
+    if step_index is not None:
+        payload["step_index"] = step_index
+    append_session_event(root, session_id, payload)
+
 def _duration_ms(started_at: str, finished_at: str) -> int | None:
     try:
         start = datetime.fromisoformat(started_at)
@@ -290,14 +303,48 @@ def _run_ollama_chat(root: Path, message: str, model: str) -> None:
     _append_activity_update(root, session_id, f"{model} の native generate を開始します。", operation_id=operation_id)
     _append_operation_event(root, session_id, operation_id=operation_id, title="Native generate stream", detail=request_detail, status="running", started_at=started_at, output_preview="")
     _update_runtime(root, status="running", current_model=model, current_model_reason="ollama native generate stream", current_user_message=message, current_stream_text="", current_operation_id=operation_id, current_started_at=started_at, current_finished_at=None)
+    _append_runtime_event(
+        root,
+        session_id,
+        operation_id=operation_id,
+        event_name="llm_call_started",
+        content=f"Native generate started: {model}",
+        details={"role": "native_generate", "model": model, "prompt": message},
+        step_index=1,
+    )
     stream_parts: list[str] = []
     try:
         for chunk in client.iter_generate_stream(model=model, prompt=message, timeout_seconds=600):
             content = str(chunk.get("response") or "")
             if content: stream_parts.append(content)
+            _append_runtime_event(
+                root,
+                session_id,
+                operation_id=operation_id,
+                event_name="llm_stream_chunk",
+                content=content,
+                details={
+                    "role": "native_generate",
+                    "model": model,
+                    "delta_content": content,
+                    "content_text": content,
+                    "accumulated_content_chars": len("".join(stream_parts)),
+                    "raw_chunk": chunk,
+                },
+                step_index=1,
+            )
             _update_runtime(root, status="running", current_stream_text=("".join(stream_parts))[-16000:])
     except Exception as exc:
         finished_at = now_iso()
+        _append_runtime_event(
+            root,
+            session_id,
+            operation_id=operation_id,
+            event_name="llm_call_failed",
+            content="".join(stream_parts),
+            details={"role": "native_generate", "model": model, "error": str(exc), "content_text": "".join(stream_parts)},
+            step_index=1,
+        )
         _append_activity_update(root, session_id, f"native generate 失敗: {exc}", status="error", operation_id=operation_id)
         _append_operation_event(root, session_id, operation_id=operation_id, title="Native generate stream", detail=request_detail, status="failed", started_at=started_at, finished_at=finished_at, duration_ms=_duration_ms(started_at, finished_at), output_preview=("".join(stream_parts))[-4000:])
         _append_native_commentary(
@@ -324,6 +371,15 @@ def _run_ollama_chat(root: Path, message: str, model: str) -> None:
         return
     finished_at = now_iso()
     final_answer = "".join(stream_parts).strip()
+    _append_runtime_event(
+        root,
+        session_id,
+        operation_id=operation_id,
+        event_name="llm_call_finished",
+        content=final_answer,
+        details={"role": "native_generate", "model": model, "content_text": final_answer},
+        step_index=1,
+    )
     _append_operation_event(root, session_id, operation_id=operation_id, title="Native generate stream", detail=request_detail, status="success", started_at=started_at, finished_at=finished_at, duration_ms=_duration_ms(started_at, finished_at), output_preview=("".join(stream_parts))[-4000:])
     append_session_event(root, session_id, {"type": "assistant_message", "role": "assistant", "content": final_answer, "model": model, "operation_id": operation_id, "step_index": 1})
     _append_activity_update(root, session_id, "native generate は正常終了しました。システムは回答を却下していません。", status="success", operation_id=operation_id)

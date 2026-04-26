@@ -17,6 +17,16 @@ def run_terminal_agent(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     session_id = session_id or active_session_id(self.root)
+    if self._is_runtime_identity_query(content):
+        result = self._answer_runtime_identity_query(content, session_id=session_id)
+        return {
+            "ok": True,
+            "route": "runtime_identity",
+            "run": result,
+            "shell": shell_name,
+            "execution_root": str(self.base_execution_root),
+            "model": "",
+        }
     payload = enqueue_message(self.root, content, session_id=session_id)
     terminal_model = self._resolve_terminal_model(model)
     run_result = self.run_until_idle(
