@@ -51,3 +51,42 @@ output.
 | Extra top-level JSON field | Agent machine-control | Rejected with `schema_validation_failed`; `raw_output_is_machine_json=true`; `schema_validation_ok=false` |
 | Valid tool JSON | Agent machine-control | Accepted; nonstream response event; no stream chunks |
 | Judge verdict with runtime identity evidence | Grounding/evidence judge | Runtime facts are explicit in evidence package |
+
+## Runtime Contract Design Discipline
+
+P4 is not responsible for making runtime-control decisions correct. The runtime
+that drives P4 is responsible for defining and enforcing the control contract.
+Observed failures must be treated as contract signals, not as isolated bugs.
+
+Before implementing any runtime-control fix, the work must declare:
+
+1. 観測事実 L0
+2. 直接原因 L1
+3. 同型失敗 L2
+4. 破れているruntime契約 L3
+5. 責務分離 L4
+6. 最小修正 L5
+7. 再発防止テスト
+
+No implementation should start from L0-L1 alone. The analysis must reach at
+least L3 so the fix is tied to a runtime contract or invariant.
+
+Required artifact shape:
+
+- A. 問題の抽象化
+- B. runtime不変条件
+- C. 実装差分
+- D. 再発防止テスト
+
+Prohibited shortcuts:
+
+- Do not fix only the observed error string.
+- Do not treat regex or post-hoc repair of LLM output as the solution.
+- Do not conclude that the runtime is safe because a judge blocked one case.
+- Do not end with "the model is bad."
+- Do not end with "make the prompt stronger."
+- Do not collapse JSON failures, finish failures, and grounding failures into a
+  single failure type.
+- Do not accept one success case as completion.
+- Do not assign the failure to P4 itself; assign it to the runtime design that
+  controls P4.
