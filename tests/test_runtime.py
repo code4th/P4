@@ -560,6 +560,21 @@ class RuntimeTests(unittest.TestCase):
             assistant = next(event for event in events if event.get("type") == "assistant_message")
             self.assertEqual(assistant["reason_code"], "runtime_profile_identity")
 
+    def test_terminal_runtime_identity_preserves_run_result_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            backend = FakeBackend([])
+            runtime = AgentRuntime(root, llm_backend=backend)
+            result = runtime.run_terminal_agent("お名前は？", model="gemma4:26b", shell_name="zsh")
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["route"], "runtime_identity")
+            self.assertEqual(result["run"]["processed"], 1)
+            self.assertTrue(result["run"]["last_result"]["ok"])
+            self.assertEqual(result["run"]["last_result"]["route"], "runtime_identity")
+            self.assertEqual(result["run"]["last_result"]["final_answer"], "私はP4、ローカルエージェントランタイムです。")
+            self.assertEqual(backend.messages_seen, [])
+
     def test_runtime_tracks_current_stream_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -19,10 +19,22 @@ def run_terminal_agent(
     session_id = session_id or active_session_id(self.root)
     if self._is_runtime_identity_query(content):
         result = self._answer_runtime_identity_query(content, session_id=session_id)
+        answer = str(result.get("answer") or "")
         return {
             "ok": True,
             "route": "runtime_identity",
-            "run": result,
+            "run": {
+                "ok": True,
+                "processed": 1,
+                "last_result": {
+                    "ok": True,
+                    "route": "runtime_identity",
+                    "final_answer": answer,
+                    "evidence": result.get("evidence") or {},
+                },
+                "pending_queue": 0,
+                "runtime_identity": result,
+            },
             "shell": shell_name,
             "execution_root": str(self.base_execution_root),
             "model": "",
