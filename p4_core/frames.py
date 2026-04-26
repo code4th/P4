@@ -33,8 +33,10 @@ class Frame:
     returned_at: str | None = None
     step_count: int = 0
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, include_session_events: bool = False) -> dict[str, Any]:
         payload = asdict(self)
+        if not include_session_events:
+            payload.pop("session_events", None)
         payload["working_memory"] = asdict(self.working_memory)
         return payload
 
@@ -51,6 +53,7 @@ class FrameManager:
         self.max_depth = max_depth
         self.frames: dict[str, Frame] = {}
         self.active_frame_id: str | None = None
+        self.event_counts: dict[str, int] = {"frame_opened": 0, "frame_returned": 0, "child_return": 0}
         self.events_path = self.root / "state" / "frames" / "frames.jsonl"
         self._load_latest()
 
@@ -67,18 +70,32 @@ class FrameManager:
         self._persist("root_created")
         return frame
 
+    # Forbidden keys in inherited_context. These represent parent state and
+    # must be dereferenced via parent_frame_id/child_task_id at read time
+    # rather than copied at open time. Keeping them out preserves the
+    # single-source-of-truth invariant (see p4-symmetry-audit-2026-04-26).
+    _FORBIDDEN_INHERITED_KEYS = frozenset({"work_package", "parent_working_memory"})
+
     def open_child_frame(self, goal: str, inherited_context: dict[str, Any]) -> Frame:
         parent = self.current_frame()
         if parent is None:
             parent = self.create_root_frame("root turn")
         if parent.depth + 1 > self.max_depth:
             raise ValueError(f"frame depth limit exceeded: max depth is {self.max_depth}")
+        ctx = dict(inherited_context or {})
+        forbidden_present = self._FORBIDDEN_INHERITED_KEYS.intersection(ctx.keys())
+        if forbidden_present:
+            raise AssertionError(
+                f"inherited_context must not copy parent state: {sorted(forbidden_present)}. "
+                "Use parent_frame_id + child_task_id and call "
+                "FrameManager.work_package_for / parent_working_memory_for at read time."
+            )
         child = Frame(
             frame_id=uuid.uuid4().hex,
             parent_frame_id=parent.frame_id,
             depth=parent.depth + 1,
             goal=str(goal or "child frame"),
-            inherited_context=dict(inherited_context or {}),
+            inherited_context=ctx,
         )
         self.frames[child.frame_id] = child
         self.active_frame_id = child.frame_id
@@ -113,6 +130,40 @@ class FrameManager:
                 break
             stack.append(parent)
         return list(reversed(stack))
+
+    # ------------------------------------------------------------------
+    # Inherited context dereferencing.
+    #
+    # Per the symmetry constitution (single source of truth), child frames
+    # MUST NOT carry copies of parent state in `inherited_context`. The
+    # parent_frame_id and child_task_id are enough to derive the live view.
+    # These helpers replace the old `inherited_context["work_package"]` and
+    # `inherited_context["parent_working_memory"]` reads.
+    # ------------------------------------------------------------------
+    def parent_of(self, frame: Frame) -> Frame | None:
+        parent_id = str(frame.parent_frame_id or "")
+        if not parent_id:
+            return None
+        return self.frames.get(parent_id)
+
+    def parent_working_memory_for(self, frame: Frame) -> WorkingMemory | None:
+        parent = self.parent_of(frame)
+        return parent.working_memory if parent is not None else None
+
+    def work_package_for(self, frame: Frame) -> dict[str, Any] | None:
+        parent = self.parent_of(frame)
+        if parent is None:
+            return None
+        task_id = str(frame.inherited_context.get("child_task_id") or "")
+        if not task_id:
+            return None
+        for task in parent.working_memory.child_tasks:
+            if str(task.get("task_id") or "") == task_id:
+                return dict(task)
+        for task in parent.working_memory.completed_child_tasks:
+            if str(task.get("task_id") or "") == task_id:
+                return dict(task)
+        return None
 
     def update_working_memory(self, updates: dict[str, Any]) -> None:
         frame = self.current_frame()
@@ -166,6 +217,19 @@ class FrameManager:
         frame.working_memory.completed_child_tasks = []
         self._persist("child_tasks_planned")
 
+    def register_child_task(self, *, parent: Frame, task: dict[str, Any]) -> dict[str, Any]:
+        registered = dict(task or {})
+        task_id = str(registered.get("task_id") or registered.get("child_task_id") or "").strip()
+        if not task_id:
+            task_id = f"adhoc-{uuid.uuid4().hex}"
+            registered["task_id"] = task_id
+        for existing in parent.working_memory.child_tasks:
+            if str(existing.get("task_id") or "") == task_id:
+                return dict(existing)
+        parent.working_memory.child_tasks.append(registered)
+        self._persist("child_task_registered")
+        return dict(registered)
+
     def next_pending_child_task(self, frame: Frame | None = None) -> dict[str, Any] | None:
         target = frame or self.current_frame()
         if target is None:
@@ -205,11 +269,21 @@ class FrameManager:
         self._persist("child_task_completed")
 
     def append_event(self, event: dict[str, Any], *, frame_id: str | None = None) -> None:
+        if self._is_frame_irrelevant_event(event):
+            return
         frame = self.frames.get(frame_id or str(self.active_frame_id or ""))
         if frame is None:
             return
         frame.session_events.append(dict(event))
+        event_type = str(event.get("type") or "")
+        if event_type in self.event_counts:
+            self.event_counts[event_type] += 1
         self._persist("event_appended")
+
+    def _is_frame_irrelevant_event(self, event: dict[str, Any]) -> bool:
+        event_type = str(event.get("type") or "")
+        event_name = str(event.get("event_name") or "")
+        return event_type == "runtime_event" and event_name == "llm_stream_chunk"
 
     def increment_step(self) -> int:
         frame = self.current_frame()
@@ -228,15 +302,14 @@ class FrameManager:
         self._persist("abandoned")
 
     def snapshot(self) -> dict[str, Any]:
-        all_events = [event for frame in self.frames.values() for event in frame.session_events]
         return {
             "active_frame_id": self.active_frame_id,
             "frame_stack": [frame.to_dict() for frame in self.frame_stack()],
             "frames": [frame.to_dict() for frame in sorted(self.frames.values(), key=lambda item: item.created_at)],
             "metrics": {
-                "frame_opened": sum(1 for event in all_events if event.get("type") == "frame_opened"),
-                "frame_returned": sum(1 for event in all_events if event.get("type") == "frame_returned"),
-                "child_return": sum(1 for event in all_events if event.get("type") == "child_return"),
+                "frame_opened": self.event_counts["frame_opened"],
+                "frame_returned": self.event_counts["frame_returned"],
+                "child_return": self.event_counts["child_return"],
                 "active_depth": self.current_frame().depth if self.current_frame() else 0,
             },
         }
@@ -249,6 +322,7 @@ class FrameManager:
                 "timestamp": now_iso(),
                 "snapshot": {
                     "active_frame_id": self.active_frame_id,
+                    "event_counts": dict(self.event_counts),
                     "frames": [frame.to_dict() for frame in self.frames.values()],
                 },
             },
@@ -265,3 +339,15 @@ class FrameManager:
             if item.get("frame_id")
         }
         self.active_frame_id = snapshot.get("active_frame_id")
+        loaded_counts = dict(snapshot.get("event_counts") or {})
+        if loaded_counts:
+            self.event_counts = {
+                key: int(loaded_counts.get(key) or 0)
+                for key in self.event_counts
+            }
+        else:
+            all_events = [event for frame in self.frames.values() for event in frame.session_events]
+            self.event_counts = {
+                key: sum(1 for event in all_events if event.get("type") == key)
+                for key in self.event_counts
+            }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from datetime import timezone, datetime
 from pathlib import Path
@@ -68,6 +69,13 @@ def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
 def read_jsonl(path: Path, *, limit: int | None = None) -> list[dict[str, Any]]:
     if not path.exists():
         return []
+    if limit is not None:
+        lines: deque[str] = deque(maxlen=limit)
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    lines.append(line)
+        return [json.loads(line) for line in lines]
     rows = [
         json.loads(line)
         for line in path.read_text(encoding="utf-8").splitlines()
@@ -154,6 +162,9 @@ class WorkspacePaths:
     def session_events_path(self, session_id: str) -> Path:
         return self.session_dir(session_id) / "events.jsonl"
 
+    def session_canonical_events_path(self, session_id: str) -> Path:
+        return self.session_dir(session_id) / "canonical-events.jsonl"
+
     def session_prompts_path(self, session_id: str) -> Path:
         return self.session_dir(session_id) / "prompts.jsonl"
 
@@ -195,6 +206,7 @@ def bootstrap_workspace(root: Path, *, force: bool = False) -> dict[str, Any]:
             "current_phase": None,
             "current_model": None,
             "current_model_reason": None,
+            "current_operation_id": None,
             "current_tool": None,
             "current_llm_workspace": None,
             "last_llm_workspace": None,
@@ -210,6 +222,9 @@ def bootstrap_workspace(root: Path, *, force: bool = False) -> dict[str, Any]:
             "last_llm_raw_preview": None,
             "last_llm_thinking_preview": None,
             "last_llm_parse_issue": None,
+            "last_llm_schema_validation": None,
+            "raw_output_is_machine_json": None,
+            "schema_validation_ok": None,
             "last_llm_stream_metadata": None,
             "last_event_at": now_iso(),
             "worker_running": False,
@@ -264,6 +279,10 @@ def append_session_event(root: Path, session_id: str, payload: dict[str, Any]) -
     paths = WorkspacePaths(root)
     event = {"event_id": uuid.uuid4().hex, "timestamp": now_iso(), **payload}
     append_jsonl(paths.session_events_path(session_id), event)
+    canonical = _canonical_event_from_session_event(event)
+    if canonical is not None:
+        _assert_canonical_event_shape(canonical)
+        append_jsonl(paths.session_canonical_events_path(session_id), canonical)
     meta = read_json(paths.session_meta_path(session_id), fallback={})
     meta["updated_at"] = now_iso()
     if payload.get("type") == "user_message":
@@ -282,6 +301,335 @@ def append_session_event(root: Path, session_id: str, payload: dict[str, Any]) -
     return event
 
 
+def append_canonical_event(root: Path, session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    paths = WorkspacePaths(root)
+    event = {
+        "event_id": str(payload.get("event_id") or uuid.uuid4().hex),
+        "timestamp": str(payload.get("timestamp") or now_iso()),
+        **{key: value for key, value in payload.items() if key not in {"event_id", "timestamp"}},
+    }
+    _assert_canonical_event_shape(event)
+    append_jsonl(paths.session_canonical_events_path(session_id), event)
+    return event
+
+
+# Canonical event schema guard (per p4-event-contract-audit-2026-04-24).
+# Any non-canonical kind/status indicates a design-philosophy drift (e.g. an
+# ad-hoc status like "accepted_with_warning" being added at the wrong layer).
+# Surface the drift at write time so it cannot silently propagate.
+_CANONICAL_KIND_STATUS: dict[str, set[str]] = {
+    "operation": {"started", "finished", "failed", "blocked"},
+    "llm": {"started", "stream", "finished", "invalid_output", "failed"},
+    "tool": {"started", "stream", "finished", "failed"},
+    "frame": {"opened", "returned", "blocked"},
+    "decision": {"accepted", "blocked", "failed"},
+    "observation": {"started", "finished", "stream"},
+}
+
+
+def _assert_canonical_event_shape(event: dict[str, Any]) -> None:
+    kind = str(event.get("kind") or "")
+    status = str(event.get("status") or "")
+    allowed = _CANONICAL_KIND_STATUS.get(kind)
+    if allowed is None:
+        raise AssertionError(
+            f"canonical event kind '{kind}' is not in the canonical schema; "
+            f"see handoff/p4-event-contract-audit-2026-04-24.md for the allowed kinds"
+        )
+    if status not in allowed:
+        raise AssertionError(
+            f"canonical event status '{status}' is not allowed for kind '{kind}'; "
+            f"allowed = {sorted(allowed)}. Lift the asymmetric variant into a "
+            f"reason_code on a canonical status instead of inventing a new one."
+        )
+
+
+def _canonical_operation_status(status: str) -> str:
+    """Normalize legacy operation statuses to the canonical set.
+
+    Per p4-event-contract-audit-2026-04-24, canonical operation status is
+    {started, finished, failed, blocked}. Existing emitters use legacy
+    synonyms ("running", "success") which we normalize at the translation
+    boundary so the canonical event log stays clean. The original value is
+    preserved in payload.raw_status for forensic visibility.
+    """
+    legacy_map = {
+        "running": "started",
+        "success": "finished",
+        "completed": "finished",
+        "ok": "finished",
+        "error": "failed",
+        "abandoned": "blocked",
+    }
+    if status in {"started", "finished", "failed", "blocked"}:
+        return status
+    return legacy_map.get(status, "started")
+
+
+def _decision_status_from_code(code: str, reason_code: str) -> str:
+    """Map legacy decision codes to canonical decision status.
+
+    Canonical decision status (per p4-event-contract-audit):
+        "accepted" | "blocked" | "failed"
+    """
+    blocked_codes = {
+        "finish_blocked",
+        "command_blocked",
+        "work_package_invalid",
+        "decompose_tasks_blocked",
+        "frame_open_blocked",
+        "frame_return_blocked",
+        "grounding_judge",
+    }
+    failed_codes = {"command_failed"}
+    accepted_codes = {"controller_finish"}
+    if code in blocked_codes:
+        return "blocked"
+    if code in failed_codes:
+        return "failed"
+    if code in accepted_codes:
+        return "accepted"
+    if code == "judge_fallback_finish":
+        # accepted iff the runtime decided to override and complete the turn;
+        # "judge_unavailable" alone (no observation acceptance) is a failure.
+        if reason_code == "judge_unavailable":
+            return "failed"
+        return "accepted"
+    if code == "finish_acceptance":
+        # reason_code carries the effective acceptance outcome. Accept on
+        # positive verdicts and on the documented observation-based override.
+        if reason_code in {"reviewed", "not_required", "judge_unavailable_observation_accepted"}:
+            return "accepted"
+        return "blocked"
+    if reason_code in {"invalid_output", "invalid_json", "empty_output"}:
+        return "blocked"
+    return "blocked"
+
+
+def _canonical_event_from_session_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    row_type = str(event.get("type") or "")
+    operation_id = str(event.get("operation_id") or "")
+    turn_id = event.get("turn_id")
+    step_index = event.get("step_index")
+    frame_id = str(event.get("frame_id") or "")
+    frame_depth = event.get("frame_depth")
+
+    common = {
+        "event_id": str(event.get("event_id") or uuid.uuid4().hex),
+        "timestamp": str(event.get("timestamp") or now_iso()),
+        "operation_id": operation_id,
+        "turn_id": turn_id,
+        "step_index": step_index,
+        "parent_event_id": event.get("parent_event_id"),
+    }
+
+    if row_type == "operation":
+        return {
+            **common,
+            "kind": "operation",
+            "status": _canonical_operation_status(str(event.get("status") or "")),
+            "payload": {
+                "title": str(event.get("title") or ""),
+                "detail": str(event.get("detail") or ""),
+                "started_at": event.get("started_at"),
+                "finished_at": event.get("finished_at"),
+                "duration_ms": event.get("duration_ms"),
+                "output_preview": str(event.get("output_preview") or ""),
+                "raw_status": str(event.get("status") or ""),
+            },
+        }
+
+    if row_type == "runtime_event":
+        event_name = str(event.get("event_name") or "")
+        details = dict(event.get("details") or {})
+        base_payload = {
+            **details,
+            "content": str(event.get("content") or ""),
+            "frame_id": frame_id,
+            "frame_depth": frame_depth,
+            "llm_workspace": event.get("llm_workspace"),
+            "phase": event.get("phase"),
+        }
+        if event_name.startswith("llm_"):
+            llm_status_map = {
+                "llm_call_started": "started",
+                "llm_stream_chunk": "stream",
+                "llm_response_received": "finished",
+                "llm_call_finished": "finished",
+                "llm_call_failed": "failed",
+                "llm_repair_requested": "invalid_output",
+            }
+            return {
+                **common,
+                "kind": "llm",
+                "status": llm_status_map.get(event_name, "finished"),
+                "payload": {
+                    "event_name": event_name,
+                    **base_payload,
+                },
+            }
+        if event_name.startswith("tool_"):
+            tool_status = "stream"
+            if event_name == "tool_call_started":
+                tool_status = "started"
+            elif event_name == "tool_call_finished":
+                tool_status = "finished" if bool(details.get("ok")) else "failed"
+            return {
+                **common,
+                "kind": "tool",
+                "status": tool_status,
+                "payload": {
+                    "event_name": event_name,
+                    **base_payload,
+                },
+            }
+        return {
+            **common,
+            "kind": "observation",
+            "status": "finished",
+            "payload": {
+                "source": "runtime_event",
+                "event_name": event_name,
+                **base_payload,
+            },
+        }
+
+    if row_type == "system_note":
+        code = str(event.get("code") or "")
+        reason_code = str(event.get("reason_code") or "")
+        details = dict(event.get("details") or {})
+        if code == "llm_output_issue":
+            return {
+                **common,
+                "kind": "llm",
+                "status": "invalid_output",
+                "payload": {
+                    "event_name": code,
+                    "summary": str(event.get("content") or ""),
+                    "parse_issue": reason_code,
+                    **details,
+                    "frame_id": frame_id,
+                    "frame_depth": frame_depth,
+                },
+            }
+        if code:
+            return {
+                **common,
+                "kind": "decision",
+                "status": _decision_status_from_code(code, reason_code),
+                "payload": {
+                    "decision_type": code,
+                    "reason_code": reason_code,
+                    "message": str(event.get("content") or ""),
+                    "details": details,
+                    "frame_id": frame_id,
+                    "frame_depth": frame_depth,
+                },
+            }
+        return {
+            **common,
+            "kind": "observation",
+            "status": "finished",
+            "payload": {
+                "source": "system_note",
+                "summary": str(event.get("content") or ""),
+                "frame_id": frame_id,
+                "frame_depth": frame_depth,
+            },
+        }
+
+    if row_type == "observer_note":
+        return {
+            **common,
+            "kind": "observation",
+            "status": "finished",
+            "payload": {
+                "source": "observer",
+                "summary": str(event.get("content") or ""),
+                "code": str(event.get("code") or ""),
+                "reason_code": str(event.get("reason_code") or ""),
+                "details": dict(event.get("details") or {}),
+                "frame_id": frame_id,
+                "frame_depth": frame_depth,
+            },
+        }
+
+    if row_type in {"activity_update", "planning_note"}:
+        raw_status = str(event.get("status") or "")
+        return {
+            **common,
+            "kind": "observation",
+            "status": "finished",
+            "payload": {
+                "source": row_type,
+                "summary": str(event.get("content") or ""),
+                "raw_status": raw_status,
+                "frame_id": frame_id,
+                "frame_depth": frame_depth,
+            },
+        }
+
+    if row_type == "task_plan":
+        return {
+            **common,
+            "kind": "decision",
+            "status": "accepted",
+            "payload": {
+                "decision_type": "task_plan",
+                "message": str(event.get("content") or ""),
+                "tasks": list(event.get("tasks") or []),
+                "rationale": str(event.get("rationale") or ""),
+                "frame_id": frame_id or str(event.get("frame_id") or ""),
+                "frame_depth": frame_depth,
+            },
+        }
+
+    if row_type == "frame_opened":
+        return {
+            **common,
+            "kind": "frame",
+            "status": "opened",
+            "payload": {
+                "frame_id": str(event.get("frame_id") or ""),
+                "parent_frame_id": str(event.get("parent_frame_id") or ""),
+                "goal": str(event.get("goal") or ""),
+                "depth": event.get("depth") if event.get("depth") is not None else frame_depth,
+                "message": str(event.get("content") or ""),
+            },
+        }
+
+    if row_type == "frame_returned":
+        return {
+            **common,
+            "kind": "frame",
+            "status": "returned",
+            "payload": {
+                "frame_id": str(event.get("frame_id") or ""),
+                "parent_frame_id": str(event.get("parent_frame_id") or ""),
+                "depth": event.get("depth") if event.get("depth") is not None else frame_depth,
+                "return_payload": dict(event.get("return_payload") or {}),
+                "message": str(event.get("content") or ""),
+            },
+        }
+
+    if row_type == "finish":
+        return {
+            **common,
+            "kind": "decision",
+            "status": "accepted",
+            "payload": {
+                "decision_type": "finish",
+                "message": str(event.get("content") or ""),
+                "model": str(event.get("model") or ""),
+                "model_reason": str(event.get("model_reason") or ""),
+                "frame_id": frame_id,
+                "frame_depth": frame_depth,
+            },
+        }
+
+    return None
+
+
 def append_prompt_snapshot(root: Path, session_id: str, payload: dict[str, Any]) -> None:
     append_jsonl(WorkspacePaths(root).session_prompts_path(session_id), {"timestamp": now_iso(), **payload})
 
@@ -291,16 +639,18 @@ def enqueue_message(root: Path, content: str, *, session_id: str | None = None) 
     if not clean_content:
         raise ValueError("message content must not be empty")
     session_id = session_id or active_session_id(root)
+    operation_id = uuid.uuid4().hex
     append_session_event(
         root,
         session_id,
-        {"type": "user_message", "role": "user", "content": clean_content},
+        {"type": "user_message", "role": "user", "content": clean_content, "operation_id": operation_id, "step_index": 0},
     )
     paths = WorkspacePaths(root)
     queue = read_json(paths.queue_path, fallback={"items": []})
     items = list(queue.get("items") or [])
     item = {
         "queue_id": uuid.uuid4().hex,
+        "operation_id": operation_id,
         "session_id": session_id,
         "content": clean_content,
         "enqueued_at": now_iso(),

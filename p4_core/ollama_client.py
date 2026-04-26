@@ -23,7 +23,14 @@ class OllamaChatClient:
             "stream": False,
         }
         if options:
-            payload["options"] = options
+            clean_options = dict(options)
+            response_format = clean_options.pop("format", None)
+            think = clean_options.pop("think", None)
+            if response_format is not None:
+                payload["format"] = response_format
+            if think is not None:
+                payload["think"] = think
+            payload["options"] = clean_options
         data = json.dumps(payload).encode("utf-8")
         req = request.Request(
             f"{self.base_url}/api/chat",
@@ -65,7 +72,14 @@ class OllamaChatClient:
             "stream": True,
         }
         if options:
-            payload["options"] = options
+            clean_options = dict(options)
+            response_format = clean_options.pop("format", None)
+            think = clean_options.pop("think", None)
+            if response_format is not None:
+                payload["format"] = response_format
+            if think is not None:
+                payload["think"] = think
+            payload["options"] = clean_options
         data = json.dumps(payload).encode("utf-8")
         req = request.Request(
             f"{self.base_url}/api/chat",
@@ -99,7 +113,14 @@ class OllamaChatClient:
             "stream": True,
         }
         if options:
-            payload["options"] = options
+            clean_options = dict(options)
+            response_format = clean_options.pop("format", None)
+            think = clean_options.pop("think", None)
+            if response_format is not None:
+                payload["format"] = response_format
+            if think is not None:
+                payload["think"] = think
+            payload["options"] = clean_options
         data = json.dumps(payload).encode("utf-8")
         req = request.Request(
             f"{self.base_url}/api/chat",
@@ -132,7 +153,11 @@ class OllamaChatClient:
             "stream": True,
         }
         if options:
-            payload["options"] = options
+            clean_options = dict(options)
+            think = clean_options.pop("think", None)
+            if think is not None:
+                payload["think"] = think
+            payload["options"] = clean_options
         if system:
             payload["system"] = system
         data = json.dumps(payload).encode("utf-8")

@@ -6,6 +6,8 @@ import time
 from typing import Any
 
 from p4_core.config_defaults import DEFAULT_TOOL_CONTENT_CHUNK_BYTES
+from p4_core.schemas import TOOL_ACTION_SCHEMA
+from p4_core.runtime_profile import runtime_identity_answer
 
 from p4_core.workspace import append_jsonl, append_session_event, now_iso, read_json, read_jsonl
 
@@ -83,22 +85,31 @@ def _deliberation_reasons(self, *, user_message: str, steps: list[dict[str, Any]
 
 def _system_prompt(self) -> str:
     output_budget = self._output_budget_prompt()
+    tool_action_schema = json.dumps(TOOL_ACTION_SCHEMA, ensure_ascii=False, separators=(",", ":"))
     return (
-        "あなたは P4、ローカルエージェントランタイムです。"
+        f"あなたは {runtime_identity_answer()} "
         "最重要: assistant の可視 content には、必ず JSON オブジェクトを1個だけ出力してください。"
         "Markdown、コードフェンス、説明文、箇条書き、JSONの前後の文章を content に出してはいけません。"
         "内部の thinking / reasoning は content とは別に保ち、content へ混入させないでください。"
-        "JSON スキーマは {\"analysis\": string, \"assistant_message\": string, \"tool_name\": string, \"tool_args\": object} です。"
+        f"content は次の JSON Schema に厳密に従ってください: {tool_action_schema}"
         "あなたの仕事は、一度に一つのツールを選択し、ツールの実行結果を新しい証拠（evidence）として活用しながら、ユーザーの目標を達成することです。"
         "客観的な完了が確認されるまで停止しないでください。"
         "出力は必ず上記 JSON 形式とし、キーは analysis, assistant_message, tool_name, tool_args としてください。"
         f"{output_budget}"
+        "実装不変条件:\n"
+        "1. まず設計意図を守ってください。曖昧なら勝手に補完せず、既存の証拠・状態・契約に合わせて行動してください。\n"
+        "2. 付け焼き刃の局所対応で塞がず、なぜその状態が発生できたのかを上位レイヤーから見直してください。\n"
+        "3. 他のコードの暗黙前提に依存せず、局所整合で閉じる形を優先してください。\n"
+        "4. tool_result に存在しない事実を主張しないでください。\n"
+        "5. 到達しないはずの経路や、設計意図に反する状態は正当化せず、より単純で対称な構造へ戻せないかを優先して考えてください。\n"
         "利用可能なツール:\n"
         f"{self.tools.describe_for_prompt()}\n"
         "フレーム操作: 問題が複数の局所目的に分かれる場合は decompose_tasks で良い粒度の子タスク計画を作ってください。"
         "decompose_tasks と open_child_frame は、goal だけでは使えません。各子には work_type, first_action, success_evidence, why_not_direct_action を含む work_package が必要です。"
         "first_action は read_file/search_code/run_command/write_file/append_file/replace_text/list_files の具体的な1 tool callとして書いてください。"
-        "decompose_tasks は最初の子フレームを開きます。子が戻ったら親は未完了の子タスクを順に open_child_frame で処理し、必要なら子の中でも同じ契約で decompose_tasks してください。"
+        "decompose_tasks は最初の子フレームを開きます。子が戻ったら親は未完了の子タスクを順に open_child_frame で処理してください。"
+        "子フレームでは、最初の具体ツール結果を得るまでは work_package.first_action をそのまま実行し、decompose_tasks/open_child_frame/finish を選ばないでください。"
+        "子フレーム内でさらに分解してよいのは、first_action のツール結果を得た後、それでも複数の独立責務が残る場合だけです。"
         "1つだけ局所目的を切り出せば十分な場合だけ open_child_frame を直接使ってください。親が first_action を直接実行できるなら、分解せず直接実行してください。"
         "子フレームで必要な結果または判断材料が揃ったら finish ではなく return_to_parent を使ってください。"
         "finish はタスクが完了した際、またはこれ以上のツール実行が不要で最善の最終回答を出す際にのみ使用してください。"
@@ -164,6 +175,16 @@ def _build_prompt(
                 f"次に扱う候補は {json.dumps(next_task, ensure_ascii=False)} です。"
                 "親フレームでは、この子タスクを open_child_frame で開くか、全子タスクが不要になった根拠を示して finish してください。\n"
             )
+        work_package = self.frame_manager.work_package_for(frame)
+        has_tool_evidence = any(str(event.get("type") or "") == "tool_result" for event in frame.session_events)
+        if frame.depth > 0 and work_package and not has_tool_evidence:
+            first_action = work_package.get("first_action") or {}
+            frame_block += (
+                "\n重要: この子フレームはまだ具体ツール結果を得ていません。"
+                "次は work_package.first_action をそのまま実行してください。"
+                f"first_action={json.dumps(first_action, ensure_ascii=False)}\n"
+                "この状態で decompose_tasks/open_child_frame/finish を選ぶと runtime がブロックします。\n"
+            )
         if frame.depth > 0 and has_child_return:
             frame_block += (
                 "\n重要: このフレームは直近で child_return を受け取り済みです。"
@@ -179,7 +200,7 @@ def _build_prompt(
         "直近のセッションイベント:\n"
         + ("\n".join(rendered_events) if rendered_events else "(履歴なし)")
         + "\n\n直近のリフレクション (失敗からの教訓):\n"
-        + self._reflection_prompt_block()
+        + self._reflection_prompt_block(user_message=user_message)
         + "\n\n編集方針:\n"
         + self._output_budget_prompt()
     )
@@ -308,7 +329,7 @@ def _build_deliberation_note(self, *, user_message: str, steps: list[dict[str, A
     )
 
 
-def _reflection_prompt_block(self) -> str:
+def _reflection_prompt_block(self, *, user_message: str = "") -> str:
     rows = read_jsonl(self.paths.reflections_path, limit=3)
     if not rows:
         return "(直近のリフレクションはありません)"
@@ -317,7 +338,27 @@ def _reflection_prompt_block(self) -> str:
         reflection = str(row.get("reflection") or "").strip()
         if not reflection:
             continue
+        if not self._reflection_relevant_to_user(reflection=reflection, user_message=user_message):
+            continue
         failure_class = str(row.get("failure_class") or "").strip()
         prefix = f"[{failure_class}] " if failure_class else ""
         lines.append(prefix + reflection)
     return "\n".join(lines[-3:]) if lines else "(直近のリフレクションはありません)"
+
+
+def _reflection_relevant_to_user(self, *, reflection: str, user_message: str) -> bool:
+    current = re.sub(r"\s+", "", str(user_message or "")).lower()
+    if not current:
+        return True
+    haystack = re.sub(r"\s+", "", str(reflection or "")).lower()
+    if current in haystack:
+        return True
+    if len(current) <= 8:
+        return False
+    tokens = set(re.findall(r"[a-z0-9_]{3,}|[ぁ-んァ-ヶー一-龥]{2,}", current))
+    for index in range(max(0, len(current) - 1)):
+        pair = current[index : index + 2]
+        if re.search(r"[ぁ-んァ-ヶー一-龥]", pair):
+            tokens.add(pair)
+    hits = sum(1 for token in tokens if token in haystack)
+    return hits >= 2

@@ -6,14 +6,30 @@ import time
 from typing import Any
 
 from p4_core.config_defaults import DEFAULT_TOOL_CONTENT_CHUNK_BYTES
+from p4_core.schema_validation import validate_json_schema
+from p4_core.schemas import TOOL_ACTION_SCHEMA
 from p4_core.workspace import append_jsonl, append_session_event, now_iso, read_json, read_jsonl
 
 
-def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: str | None = None) -> dict[str, Any]:
+def _chat_with_repair(
+    self,
+    *,
+    role: str,
+    model: str,
+    prompt: str,
+    session_id: str | None = None,
+    turn_id: str | None = None,
+    queue_id: str | None = None,
+    step_index: int | None = None,
+    llm_workspace: str | None = None,
+    current_phase: str | None = None,
+) -> dict[str, Any]:
     timeout_seconds = int(self.runtime_config.get("chat_timeout_seconds") or 180)
     retry_limit = int(self.runtime_config.get("json_retry_limit") or 0)
     thinking_only_repair_limit = int(self.runtime_config.get("thinking_only_repair_limit") if self.runtime_config.get("thinking_only_repair_limit") is not None else 1)
     options = dict(self.ollama_options.get(role, {}))
+    options.setdefault("format", TOOL_ACTION_SCHEMA)
+    options.setdefault("think", False)
     started_at = time.time()
     started_iso = now_iso()
     last_content = ""
@@ -22,9 +38,6 @@ def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: s
     attempt_count = 0
     stream_metadata: dict[str, Any] = {}
 
-    # Action/tool mode gets a curated prompt from _build_prompt. Replaying the
-    # full chat history here reintroduces stale failures and unrelated tasks.
-    del session_id
     messages = [
         {"role": "system", "content": self._system_prompt()},
         {"role": "user", "content": prompt},
@@ -34,97 +47,69 @@ def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: s
     while True:
         attempt_count += 1
         stream_metadata = {}
-        if hasattr(self.llm_backend, "iter_chat_stream"):
-            chunks = self.llm_backend.iter_chat_stream(
-                model=model,
-                messages=messages,
-                options=options,
-                timeout_seconds=timeout_seconds,
-            )
-            content_parts: list[str] = []
-            thinking_parts: list[str] = []
-            for chunk in chunks:
-                stream_metadata = self._extract_stream_metadata(chunk, previous=stream_metadata)
-                message = chunk.get("message") or {}
-                delta_content = str(message.get("content") or "")
-                delta_thinking = str(message.get("thinking") or "")
-                if not delta_content and not delta_thinking:
-                    continue
-                if delta_thinking:
-                    thinking_parts.append(delta_thinking)
-                if delta_content:
-                    content_parts.append(delta_content)
-                current_stream = self._format_llm_stream_text(
-                    thinking_text="".join(thinking_parts),
-                    content_text="".join(content_parts),
-                )
-                self._write_runtime_status(
-                    status="running",
-                    current_role=role,
-                    current_model=model,
-                    current_stream_text=current_stream[-4000:],
-                    worker_running=self._worker_running(),
-                )
-            last_content = "".join(content_parts)
-            last_thinking = "".join(thinking_parts)
-            last_display = self._format_llm_stream_text(thinking_text=last_thinking, content_text=last_content)
-        elif hasattr(self.llm_backend, "chat_stream"):
-            # Some fake/test backends expose chat_stream as a buffered list.
-            # Real Ollama streaming should use iter_chat_stream above so live
-            # output is updated while tokens arrive.
-            chunks = self.llm_backend.chat_stream(
-                model=model,
-                messages=messages,
-                options=options,
-                timeout_seconds=timeout_seconds,
-            )
-            content_parts: list[str] = []
-            thinking_parts: list[str] = []
-            for chunk in chunks:
-                stream_metadata = self._extract_stream_metadata(chunk, previous=stream_metadata)
-                message = chunk.get("message") or {}
-                delta_content = str(message.get("content") or "")
-                delta_thinking = str(message.get("thinking") or "")
-                if not delta_content and not delta_thinking:
-                    continue
-                if delta_thinking:
-                    thinking_parts.append(delta_thinking)
-                if delta_content:
-                    content_parts.append(delta_content)
-                current_stream = self._format_llm_stream_text(
-                    thinking_text="".join(thinking_parts),
-                    content_text="".join(content_parts),
-                )
-                self._write_runtime_status(
-                    status="running",
-                    current_role=role,
-                    current_model=model,
-                    current_stream_text=current_stream[-4000:],
-                    worker_running=self._worker_running(),
-                )
-            last_content = "".join(content_parts)
-            last_thinking = "".join(thinking_parts)
-            last_display = self._format_llm_stream_text(thinking_text=last_thinking, content_text=last_content)
-        else:
-            response = self.llm_backend.chat(
-                model=model,
-                messages=messages,
-                options=options,
-                timeout_seconds=timeout_seconds,
-            )
-            last_content = str(response.get("content_text") or response.get("content") or "")
-            last_thinking = str(response.get("thinking_text") or response.get("thinking") or "")
-            last_display = self._format_llm_stream_text(thinking_text=last_thinking, content_text=last_content)
-            stream_metadata = self._extract_stream_metadata(response.get("raw") or {}, previous={})
-            self._write_runtime_status(
-                status="running",
-                current_role=role,
-                current_model=model,
-                current_stream_text=last_display[-4000:],
-                worker_running=self._worker_running(),
-            )
+        self._append_runtime_event(
+            session_id,
+            event_name="llm_call_started",
+            content=f"LLM call started: {model}",
+            details={
+                "role": role,
+                "model": model,
+                "attempt_count": attempt_count,
+                "timeout_seconds": timeout_seconds,
+                "transport": "chat_nonstream",
+                "schema_required": True,
+            },
+            turn_id=turn_id,
+            queue_id=queue_id,
+            step_index=step_index,
+            llm_workspace=llm_workspace,
+            phase=current_phase,
+        )
+        response = self.llm_backend.chat(
+            model=model,
+            messages=messages,
+            options=options,
+            timeout_seconds=timeout_seconds,
+        )
+        last_content = str(response.get("content_text") if "content_text" in response else response.get("content") or "")
+        last_thinking = str(response.get("thinking_text") or response.get("thinking") or "")
+        last_display = self._format_llm_stream_text(thinking_text=last_thinking, content_text=last_content)
+        stream_metadata = self._extract_stream_metadata(response.get("raw") or {}, previous={})
+        self._append_runtime_event(
+            session_id,
+            event_name="llm_response_received",
+            content=last_display,
+            details={
+                "role": role,
+                "model": model,
+                "attempt_count": attempt_count,
+                "content_text": last_content,
+                "thinking_text": last_thinking,
+                "stream_metadata": stream_metadata,
+                "transport": "chat_nonstream",
+                "schema_required": True,
+            },
+            turn_id=turn_id,
+            queue_id=queue_id,
+            step_index=step_index,
+            llm_workspace=llm_workspace,
+            phase=current_phase,
+        )
+        self._write_runtime_status(
+            status="running",
+            current_role=role,
+            current_model=model,
+            current_stream_text=self._tail_stream_text(last_display, limit=4000),
+            worker_running=self._worker_running(),
+        )
         envelope = self._parse_envelope(last_content)
-        if self._raw_contains_json_object(last_content) and self._looks_like_structured_envelope(envelope):
+        schema_validation = validate_json_schema(envelope, TOOL_ACTION_SCHEMA)
+        raw_output_is_machine_json = self._raw_is_exact_json_object(last_content)
+        if (
+            raw_output_is_machine_json
+            and self._looks_like_structured_envelope(envelope)
+            and schema_validation.ok
+        ):
             finished_at = time.time()
             finished_iso = now_iso()
             self._write_runtime_status(
@@ -138,8 +123,35 @@ def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: s
                 last_llm_raw_preview=last_content[:500],
                 last_llm_thinking_preview=last_thinking[:500],
                 last_llm_parse_issue=None,
+                last_llm_schema_validation={"ok": True, "errors": []},
+                raw_output_is_machine_json=True,
+                schema_validation_ok=True,
                 last_llm_stream_metadata=stream_metadata,
-                current_stream_text=last_display[-4000:],
+                current_stream_text=self._tail_stream_text(last_display, limit=4000),
+            )
+            self._append_runtime_event(
+                session_id,
+                event_name="llm_call_finished",
+                content=last_display,
+                details={
+                    "role": role,
+                    "model": model,
+                    "attempt_count": attempt_count,
+                    "duration_ms": int((finished_at - started_at) * 1000),
+                    "content_text": last_content,
+                    "thinking_text": last_thinking,
+                    "stream_metadata": stream_metadata,
+                    "parse_issue": "",
+                    "schema_validation": {"ok": True, "errors": []},
+                    "raw_output_is_machine_json": True,
+                    "schema_validation_ok": True,
+                    "transport": "chat_nonstream",
+                },
+                turn_id=turn_id,
+                queue_id=queue_id,
+                step_index=step_index,
+                llm_workspace=llm_workspace,
+                phase=current_phase,
             )
             return {
                 "envelope": envelope,
@@ -148,6 +160,9 @@ def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: s
                 "thinking_text": last_thinking,
                 "combined_text": last_display,
                 "parse_issue": "",
+                "schema_validation": {"ok": True, "errors": []},
+                "raw_output_is_machine_json": True,
+                "schema_validation_ok": True,
                 "stream_metadata": stream_metadata,
             }
         fallback = self._parse_envelope(last_content)
@@ -158,6 +173,28 @@ def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: s
             stream_metadata=stream_metadata,
         )
         if parse_issue == "thinking_only_output" and thinking_repairs_used < thinking_only_repair_limit:
+            self._append_runtime_event(
+                session_id,
+                event_name="llm_repair_requested",
+                content=f"Repair requested: {parse_issue}",
+                details={
+                    "role": role,
+                    "model": model,
+                    "attempt_count": attempt_count,
+                    "parse_issue": parse_issue,
+                    "schema_validation": {"ok": schema_validation.ok, "errors": list(schema_validation.errors)},
+                    "raw_output_is_machine_json": raw_output_is_machine_json,
+                    "schema_validation_ok": bool(schema_validation.ok),
+                    "content_text": last_content,
+                    "thinking_text": last_thinking,
+                    "stream_metadata": stream_metadata,
+                },
+                turn_id=turn_id,
+                queue_id=queue_id,
+                step_index=step_index,
+                llm_workspace=llm_workspace,
+                phase=current_phase,
+            )
             thinking_repairs_used += 1
             messages = [
                 {"role": "system", "content": self._system_prompt()},
@@ -170,6 +207,28 @@ def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: s
             continue
         if normal_repairs_used >= retry_limit:
             break
+        self._append_runtime_event(
+            session_id,
+            event_name="llm_repair_requested",
+            content=f"Repair requested: {parse_issue}",
+            details={
+                "role": role,
+                "model": model,
+                "attempt_count": attempt_count,
+                "parse_issue": parse_issue,
+                "schema_validation": {"ok": schema_validation.ok, "errors": list(schema_validation.errors)},
+                "raw_output_is_machine_json": raw_output_is_machine_json,
+                "schema_validation_ok": bool(schema_validation.ok),
+                "content_text": last_content,
+                "thinking_text": last_thinking,
+                "stream_metadata": stream_metadata,
+            },
+            turn_id=turn_id,
+            queue_id=queue_id,
+            step_index=step_index,
+            llm_workspace=llm_workspace,
+            phase=current_phase,
+        )
         normal_repairs_used += 1
         messages = [
             {"role": "system", "content": self._system_prompt()},
@@ -189,6 +248,8 @@ def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: s
         envelope=fallback,
         stream_metadata=stream_metadata,
     )
+    schema_validation = validate_json_schema(fallback, TOOL_ACTION_SCHEMA)
+    raw_output_is_machine_json = self._raw_is_exact_json_object(last_content)
     self._write_runtime_status(
         status="running",
         current_role=role,
@@ -200,9 +261,36 @@ def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: s
         last_llm_raw_preview=last_content[:500],
         last_llm_thinking_preview=last_thinking[:500],
         last_llm_parse_issue=parse_issue,
+        last_llm_schema_validation={"ok": schema_validation.ok, "errors": list(schema_validation.errors)},
+        raw_output_is_machine_json=raw_output_is_machine_json,
+        schema_validation_ok=bool(schema_validation.ok),
         last_llm_stream_metadata=stream_metadata,
-        current_stream_text=last_display[-4000:],
+        current_stream_text=self._tail_stream_text(last_display, limit=4000),
         last_error=f"llm response did not follow json contract: {parse_issue}",
+    )
+    self._append_runtime_event(
+        session_id,
+        event_name="llm_call_finished",
+        content=last_display,
+        details={
+            "role": role,
+            "model": model,
+            "attempt_count": attempt_count,
+            "duration_ms": int((finished_at - started_at) * 1000),
+            "content_text": last_content,
+            "thinking_text": last_thinking,
+            "stream_metadata": stream_metadata,
+            "parse_issue": parse_issue,
+            "schema_validation": {"ok": schema_validation.ok, "errors": list(schema_validation.errors)},
+            "raw_output_is_machine_json": raw_output_is_machine_json,
+            "schema_validation_ok": bool(schema_validation.ok),
+            "transport": "chat_nonstream",
+        },
+        turn_id=turn_id,
+        queue_id=queue_id,
+        step_index=step_index,
+        llm_workspace=llm_workspace,
+        phase=current_phase,
     )
     return {
         "envelope": fallback,
@@ -211,6 +299,9 @@ def _chat_with_repair(self, *, role: str, model: str, prompt: str, session_id: s
         "thinking_text": last_thinking,
         "combined_text": last_display,
         "parse_issue": parse_issue,
+        "schema_validation": {"ok": schema_validation.ok, "errors": list(schema_validation.errors)},
+        "raw_output_is_machine_json": raw_output_is_machine_json,
+        "schema_validation_ok": bool(schema_validation.ok),
         "stream_metadata": stream_metadata,
     }
 
@@ -223,6 +314,18 @@ def _format_llm_stream_text(self, *, thinking_text: str, content_text: str) -> s
     if thinking:
         return f"[thinking]\n{thinking}"
     return content
+
+
+def _tail_stream_text(self, text: str, *, limit: int) -> str:
+    value = str(text or "")
+    if len(value) <= limit:
+        return value
+    tail = value[-limit:]
+    if value.startswith("[thinking]") and not tail.startswith("[thinking]"):
+        return "[thinking]\n... [live output truncated]\n" + tail
+    if value.startswith("[content]") and not tail.startswith("[content]"):
+        return "[content]\n... [live output truncated]\n" + tail
+    return tail
 
 
 def _json_repair_prompt(self, *, parse_target_text: str, stream_metadata: dict[str, Any]) -> str:
@@ -258,7 +361,7 @@ def _thinking_only_repair_prompt(self, *, thinking_text: str, stream_metadata: d
         "analysis, assistant_message, tool_name, tool_args. "
         "Do not include Markdown, code fences, prose outside JSON, or hidden reasoning in content. "
         "If the user only needs a conversational answer and no tool is needed, use "
-        "{\"tool_name\":\"final_answer\",\"tool_args\":{\"answer\":\"...\"}}. "
+        "{\"assistant_message\":\"...\",\"tool_name\":\"final_answer\",\"tool_args\":{\"answer\":\"...\"}}. "
         "If a tool is needed, choose exactly one concrete tool call. "
         f"Previous hidden-thinking preview for diagnosis only, not to copy verbatim: {thinking_preview}"
     )
@@ -306,12 +409,17 @@ def _classify_llm_parse_issue(
     candidate = self._extract_json_object(raw.strip())
     if candidate is None:
         return "json_parse_error"
+    if raw.strip() != candidate:
+        return "json_extraneous_text"
     try:
         json.loads(candidate)
     except json.JSONDecodeError:
         return "json_parse_error"
     if not self._looks_like_structured_envelope(envelope):
         return "invalid_tool_envelope"
+    schema_validation = validate_json_schema(envelope, TOOL_ACTION_SCHEMA)
+    if not schema_validation.ok:
+        return "schema_validation_failed"
     return "json_contract_not_confirmed"
 
 
@@ -339,17 +447,32 @@ def _raw_contains_json_object(self, raw_text: str) -> bool:
     return self._extract_json_object(raw_text.strip()) is not None
 
 
+def _raw_is_exact_json_object(self, raw_text: str) -> bool:
+    raw = str(raw_text or "").strip()
+    candidate = self._extract_json_object(raw)
+    return candidate is not None and raw == candidate
+
+
 def _extract_json_object(self, text: str) -> str | None:
-    start = text.find("{")
-    if start < 0:
+    raw = str(text or "")
+    if "{" not in raw:
         return None
-    depth = 0
-    for index in range(start, len(text)):
-        char = text[index]
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : index + 1]
-    return None
+    decoder = json.JSONDecoder()
+    best: tuple[int, str] | None = None
+    for index, char in enumerate(raw):
+        if char != "{":
+            continue
+        prefix = raw[:index].rstrip()
+        if prefix and prefix[-1] in {":", "[", ","}:
+            continue
+        try:
+            payload, end = decoder.raw_decode(raw[index:])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        candidate = raw[index : index + end]
+        candidate_len = len(candidate)
+        if best is None or candidate_len > best[0]:
+            best = (candidate_len, candidate)
+    return best[1] if best is not None else None

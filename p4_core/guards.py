@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 from p4_core.workspace import append_jsonl, append_session_event, now_iso, read_json, read_jsonl
@@ -88,6 +89,31 @@ def _redundant_command_reason(self, *, tool_args: dict[str, Any], steps: list[di
         return f"重複コマンドの実行をブロックしました: {command}。既存の tool_result を使用するか、別のステップを選択してください。"
     if same_command and not bool(payload.get("ok")):
         return f"失敗した重複コマンドの実行をブロックしました: {command}。引数を変更するか、新しい証拠を収集してから再試行してください。"
+    return None
+
+
+def _similar_command_warning(self, *, tool_args: dict[str, Any], steps: list[dict[str, Any]]) -> str | None:
+    command = str(tool_args.get("command") or "").strip()
+    if not command:
+        return None
+    recent_commands = [
+        str((step.get("tool_result") or {}).get("command") or "").strip()
+        for step in steps
+        if str(step.get("tool_name") or "") == "run_command"
+    ][-3:]
+    command_tokens = set(re.findall(r"[A-Za-z0-9_./:-]+", command.lower()))
+    if not command_tokens:
+        return None
+    for previous in recent_commands:
+        previous_tokens = set(re.findall(r"[A-Za-z0-9_./:-]+", previous.lower()))
+        if not previous_tokens or previous == command:
+            continue
+        similarity = len(command_tokens & previous_tokens) / len(command_tokens | previous_tokens)
+        if similarity >= 0.85:
+            return (
+                f"類似コマンド警告: `{command}` は直近の `{previous}` と類似度 {similarity:.2f} です。"
+                "同じ失敗を繰り返していないか確認し、必要なら別の観測または修正を行ってください。"
+            )
     return None
 
 
