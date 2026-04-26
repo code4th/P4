@@ -90,3 +90,40 @@ Prohibited shortcuts:
 - Do not accept one success case as completion.
 - Do not assign the failure to P4 itself; assign it to the runtime design that
   controls P4.
+
+## Runtime Responsibility Boundary
+
+The runtime owns progress control. LLM output is an input to that control, not
+the control authority itself.
+
+| Component | Owns | Must not own | Required state or output |
+|---|---|---|---|
+| Planner | Breaks the user request into work units and may propose work packages. | Completion judgment, final acceptance, or evidence sufficiency. | Planned work units with goal, work_type, first_action, success_evidence, and why_not_direct_action when decomposition is used. |
+| Controller | Chooses the next executable action from current task state and tool observations. Applies tool results to task state. | Promoting incomplete work to final, treating stdout as final, or using acceptance judge as normal progress control. | Next action, state transition, and contract status before any final candidate is created. |
+| Tool Executor | Executes an action and attaches `result_kind` to the observation. | Deciding task completion or converting stdout/stderr into final answer. | Structured tool result: action id, result_kind, stdout/stderr/artifact paths, exit status, size metadata, and failure class if any. |
+| Task State | Stores accumulated facts about progress. | Inferring hidden user intent or judging final quality. | `artifact_written`, `command_executed`, `validation_run`, `result_displayed`, `evidence_collected`, and related evidence references. |
+| Completion Contract | Converts the user request into required completion conditions. | Accepting a final answer or substituting missing evidence. | Required conditions such as artifact creation, execution, validation, display, and evidence obligations. |
+| Final Candidate Gate | Compares task state against the completion contract before a final candidate exists. | Grounding judgment, stylistic answer evaluation, or repair by prompt retry. | Either `final_candidate_allowed=true` with matched evidence or `contract_incomplete` with missing conditions. |
+| Acceptance Judge | Acts as the final safety check after the final candidate gate passes. | Normal progress control, task-state repair, or deciding what action to run next. | Acceptance verdict over an already contract-complete final candidate and evidence package. |
+| Failure Taxonomy | Separates failure classes so recovery follows the correct route. | Collapsing unrelated failures into a generic retry or prompt-strengthening path. | Distinct classes including `schema_parse_failed`, `raw_output_extraneous_text`, `content_too_large`, `contract_incomplete`, `grounding_insufficient`, and `validation_failed`. |
+
+### Boundary Invariants
+
+- Planner may decompose work, but it must not decide that work is complete.
+- Controller may choose and apply actions, but it must not create a final
+  candidate while the completion contract is incomplete.
+- Tool Executor may return stdout, stderr, and artifacts, but stdout is only an
+  observation until task state and completion contract agree that it is evidence.
+- Task State is the single runtime source for progress facts. Dashboard and
+  logs may render it, but they must not create separate truth.
+- Completion Contract is derived from the user request before final gating. It
+  must not be shrunk merely because evidence is missing.
+- Final Candidate Gate runs before Acceptance Judge. If it reports
+  `contract_incomplete`, no acceptance judge call should happen.
+- Acceptance Judge is a final defense only. A blocked finish is evidence of an
+  earlier control failure if the controller could have known the contract was
+  incomplete.
+- Failure taxonomy entries require route-specific recovery. For example,
+  `content_too_large` should lead to chunking or payload-budget handling, not to
+  JSON parse repair; `grounding_insufficient` should lead to evidence collection,
+  not schema retry.
