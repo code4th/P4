@@ -33,8 +33,8 @@ class ToolExecutor:
             {"name": "list_files", "args": {"path": "relative path, optional"}, "description": "List files under the workspace."},
             {"name": "read_file", "args": {"path": "relative file path"}, "description": "Read a UTF-8 text file."},
             {"name": "search_code", "args": {"query": "text or regex", "path": "relative path, optional"}, "description": "Search files with ripgrep."},
-            {"name": "write_file", "args": {"path": "relative file path", "content": "new file content"}, "description": f"Create or overwrite a UTF-8 file with one complete chunk up to {self.content_chunk_max_bytes} bytes. If the file is larger, write only the next line-boundary chunk and continue later with append_file."},
-            {"name": "append_file", "args": {"path": "relative file path", "content": "content chunk"}, "description": f"Append one complete UTF-8 chunk up to {self.content_chunk_max_bytes} bytes. End chunks on a line boundary when writing source code."},
+            {"name": "write_file", "args": {"path": "relative file path", "content": "new file content"}, "description": f"Create or overwrite a UTF-8 file. Prefer chunks up to {self.content_chunk_max_bytes} bytes; complete source up to {self._hard_content_max_bytes()} bytes may be accepted when syntax is valid. Larger content must be split across write_file and append_file."},
+            {"name": "append_file", "args": {"path": "relative file path", "content": "content chunk"}, "description": f"Append one UTF-8 chunk. Prefer chunks up to {self.content_chunk_max_bytes} bytes; complete source chunks up to {self._hard_content_max_bytes()} bytes may be accepted when syntax is valid. Larger content must be split on a line boundary."},
             {"name": "replace_text", "args": {"path": "relative file path", "old_text": "exact text to replace", "new_text": "replacement text"}, "description": "Replace one exact, unique text block in an existing file after reading it."},
             {
                 "name": "run_command",
@@ -198,48 +198,118 @@ class ToolExecutor:
         target = self._resolve_path(path)
         content_bytes = len(content.encode("utf-8"))
         max_bytes = self.content_chunk_max_bytes
-        if content_bytes > max_bytes:
-            return {
-                "ok": False,
-                "tool": "write_file",
-                "path": str(target.relative_to(self.root)),
-                "error": f"write_file content is too large for one JSON tool call; send only the next line-boundary file chunk, then use append_file in later steps for the remaining chunks; chunk limit is {max_bytes} bytes",
-                "bytes_requested": content_bytes,
-                "max_bytes": max_bytes,
-                "suggested_tool": "append_file",
-            }
+        hard_max_bytes = self._hard_content_max_bytes()
+        size_guidance = self._content_size_guidance(tool_name="write_file", path=str(target.relative_to(self.root)), content=content)
+        if size_guidance is not None and not bool(size_guidance.get("ok")):
+            return size_guidance
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        return {
+        result = {
             "ok": True,
             "tool": "write_file",
             "path": str(target.relative_to(self.root)),
             "bytes_written": content_bytes,
         }
+        if content_bytes > max_bytes:
+            result.update(
+                {
+                    "size_policy": "accepted_over_soft_limit",
+                    "warning": f"content exceeded recommended chunk size ({content_bytes}/{max_bytes} bytes) but stayed within hard limit ({hard_max_bytes} bytes) and syntax validation did not fail",
+                    "recommended_next_chunk_bytes": max_bytes,
+                    "hard_max_bytes": hard_max_bytes,
+                }
+            )
+        return result
 
     def _append_file(self, *, path: str, content: str) -> dict[str, Any]:
         target = self._resolve_path(path)
         content_bytes = len(content.encode("utf-8"))
         max_bytes = self.content_chunk_max_bytes
-        if content_bytes > max_bytes:
-            return {
-                "ok": False,
-                "tool": "append_file",
-                "path": str(target.relative_to(self.root)),
-                "error": f"append_file content chunk is too large; return only the next line-boundary chunk in this step and continue with another append_file step; chunk limit is {max_bytes} bytes",
-                "bytes_requested": content_bytes,
-                "max_bytes": max_bytes,
-            }
+        hard_max_bytes = self._hard_content_max_bytes()
+        existing_content = target.read_text(encoding="utf-8") if target.exists() else ""
+        size_guidance = self._content_size_guidance(
+            tool_name="append_file",
+            path=str(target.relative_to(self.root)),
+            content=content,
+            syntax_content=existing_content + content,
+        )
+        if size_guidance is not None and not bool(size_guidance.get("ok")):
+            return size_guidance
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as handle:
             handle.write(content)
-        return {
+        result = {
             "ok": True,
             "tool": "append_file",
             "path": str(target.relative_to(self.root)),
             "bytes_appended": content_bytes,
             "total_bytes": target.stat().st_size,
         }
+        if content_bytes > max_bytes:
+            result.update(
+                {
+                    "size_policy": "accepted_over_soft_limit",
+                    "warning": f"content exceeded recommended chunk size ({content_bytes}/{max_bytes} bytes) but stayed within hard limit ({hard_max_bytes} bytes) and syntax validation did not fail",
+                    "recommended_next_chunk_bytes": max_bytes,
+                    "hard_max_bytes": hard_max_bytes,
+                }
+            )
+        return result
+
+    def _hard_content_max_bytes(self) -> int:
+        return self.content_chunk_max_bytes * 2
+
+    def _content_size_guidance(self, *, tool_name: str, path: str, content: str, syntax_content: str | None = None) -> dict[str, Any] | None:
+        content_bytes = len(content.encode("utf-8"))
+        soft_max_bytes = self.content_chunk_max_bytes
+        hard_max_bytes = self._hard_content_max_bytes()
+        if content_bytes <= soft_max_bytes:
+            return None
+        syntax_error = self._source_syntax_error(path=path, content=content if syntax_content is None else syntax_content)
+        if syntax_error:
+            return {
+                "ok": False,
+                "tool": tool_name,
+                "path": path,
+                "error": "content exceeded recommended chunk size and failed syntax validation; split or fix the source before writing",
+                "failure_type": "validation_failed",
+                "bytes_requested": content_bytes,
+                "recommended_next_chunk_bytes": soft_max_bytes,
+                "hard_max_bytes": hard_max_bytes,
+                "syntax_error": syntax_error,
+                "allowed_next_actions": [
+                    {"tool": tool_name, "strategy": "send a syntactically complete line-boundary chunk"},
+                    {"tool": "write_file" if tool_name == "append_file" else "append_file", "strategy": "continue with the next complete chunk after a valid prefix exists"},
+                ],
+                "suggested_split_strategy": "Split source on function/class or line boundaries so every emitted chunk is syntactically valid when possible.",
+            }
+        if content_bytes <= hard_max_bytes:
+            return {"ok": True}
+        return {
+            "ok": False,
+            "tool": tool_name,
+            "path": path,
+            "error": f"{tool_name} content is more than double the recommended chunk size; split it before retrying",
+            "failure_type": "content_too_large",
+            "bytes_requested": content_bytes,
+            "recommended_next_chunk_bytes": soft_max_bytes,
+            "hard_max_bytes": hard_max_bytes,
+            "allowed_next_actions": [
+                {"tool": "write_file", "strategy": "write only the first line-boundary chunk"},
+                {"tool": "append_file", "strategy": "append the next line-boundary chunk after the first chunk exists"},
+            ],
+            "suggested_split_strategy": "Use chunks no larger than recommended_next_chunk_bytes; if needed, one syntactically valid chunk may exceed that up to hard_max_bytes, but content above hard_max_bytes must be split.",
+        }
+
+    def _source_syntax_error(self, *, path: str, content: str) -> str:
+        if not path.endswith(".py"):
+            return ""
+        try:
+            compile(content, path, "exec")
+        except SyntaxError as exc:
+            location = f"line {exc.lineno}" if exc.lineno else "unknown location"
+            return f"{exc.msg} ({location})"
+        return ""
 
     def _replace_text(self, *, path: str, old_text: str, new_text: str) -> dict[str, Any]:
         if not old_text:

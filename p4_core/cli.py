@@ -66,7 +66,7 @@ def main() -> None:
         payload = {
             "version": __version__,
             "mainline_date": __mainline_date__,
-            "canonical_handoff": "handoff/p4-design-spec-2026-04-21.md",
+            "canonical_handoff": "handoff/p4-canonical-mainline-2026-04-26.md",
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return

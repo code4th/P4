@@ -19,6 +19,7 @@ from p4_core.schemas import NON_DECOMPOSE_ACTION_TOOLS, WORK_PACKAGE_SCHEMA, WOR
 from p4_core.runtime_profile import is_runtime_identity_query, runtime_identity_answer, runtime_profile_evidence
 from p4_core.tools import ToolExecutor
 from p4_core.workspace import (
+    DEFAULT_CONFIG,
     WorkspacePaths,
     active_session_id,
     append_jsonl,
@@ -32,6 +33,15 @@ from p4_core.workspace import (
     read_jsonl,
     write_json,
 )
+
+
+def _merge_with_defaults(defaults: Any, override: Any) -> Any:
+    if isinstance(defaults, dict) and isinstance(override, dict):
+        merged = dict(defaults)
+        for key, value in override.items():
+            merged[key] = _merge_with_defaults(defaults.get(key), value) if key in defaults else value
+        return merged
+    return override if override is not None else defaults
 from p4_core.grounding import (
     _finish_acceptance_evaluation,
     _grounding_issues,
@@ -92,6 +102,7 @@ from p4_core.terminal import (
     _output_preview,
     _preferred_shell_from_extra_prompt,
     _resolve_terminal_model,
+    _stdout_result_block,
     _synthesize_terminal_final_answer,
     _terminal_answer_is_direct_evidence,
     run_terminal_agent,
@@ -107,7 +118,8 @@ class AgentRuntime:
     def __init__(self, root: Path, *, llm_backend: Any | None = None) -> None:
         self.root = Path(root).expanduser().resolve()
         self.paths = WorkspacePaths(self.root)
-        self.config = read_json(self.paths.config_path, fallback={})
+        loaded_config = read_json(self.paths.config_path, fallback={})
+        self.config = _merge_with_defaults(DEFAULT_CONFIG, loaded_config)
         self.router = ModelRouter(self.config.get("models", {}))
         self.llm_backend = llm_backend or OllamaChatClient(base_url=str(self.config.get("ollama_base_url") or "http://127.0.0.1:11434"))
         self.ollama_options = dict(self.config.get("ollama_options", {}))
@@ -628,8 +640,20 @@ class AgentRuntime:
             parts.append("limitations: " + "; ".join(limitations))
         return " ".join(parts)
 
+    _FINISH_BLOCK_REASONS = ("finish_acceptance_failed", "judge_invalid_output", "judge_error", "grounding_issues")
+
     def _consecutive_finish_block_count(self, recent_events: list[dict[str, Any]]) -> int:
+        count, _ = self._consecutive_finish_block_summary(recent_events)
+        return count
+
+    def _consecutive_finish_block_summary(self, recent_events: list[dict[str, Any]]) -> tuple[int, str]:
+        """Return (count, dominant_trigger_reason).
+
+        dominant_trigger_reason は連続ブロック群の中で最後 (=最直近) の reason_code。
+        fallback ラベルの asymmetry 解消のため、何が引き金だったかを失わないようにする。
+        """
         count = 0
+        latest_reason = ""
         for event in reversed(recent_events):
             event_type = str(event.get("type") or "")
             if event_type == "tool_result":
@@ -638,9 +662,11 @@ class AgentRuntime:
                 continue
             code = str(event.get("code") or "")
             reason = str(event.get("reason_code") or "")
-            if code == "finish_blocked" and reason in {"finish_acceptance_failed", "judge_invalid_output", "judge_error", "grounding_issues"}:
+            if code == "finish_blocked" and reason in self._FINISH_BLOCK_REASONS:
                 count += 1
-        return count
+                if not latest_reason:
+                    latest_reason = reason
+        return count, latest_reason
 
     def _handle_decompose_tasks(
         self,
@@ -1512,7 +1538,8 @@ class AgentRuntime:
                 recent_events=recent_events,
                 current_phase=current_phase,
             )
-            if steps and self._consecutive_finish_block_count(recent_events) >= 3:
+            block_count, trigger_reason = self._consecutive_finish_block_summary(recent_events)
+            if steps and block_count >= 3:
                 fallback_answer = self._synthesize_terminal_final_answer(
                     goal_text=goal_text,
                     user_message=recent_user_message,
@@ -1526,12 +1553,19 @@ class AgentRuntime:
                 accepted = self._finish_status_is_accepted(acceptance.get("status"))
                 override = acceptance.get("acceptance_override") or {}
                 override_reason = str(override.get("reason_code") or "")
+                # trigger_reason ("judge_invalid_output" / "judge_error" / ...) を fallback ラベルに継承する。
+                # 旧実装は accepted=False のとき一律 "judge_unavailable" に丸めていたが、
+                # judge は到達しているケース (例: invalid_output) も同じラベルになり症状=原因の対応が壊れていた
+                # (p4-coding-invariants Invariant 4 — variation と asymmetry の混同)。
+                trigger_label = trigger_reason or "judge_unavailable"
                 if accepted and override_reason:
                     finish_reason_code = override_reason
                 elif accepted:
-                    finish_reason_code = "judge_unavailable_observation_accepted"
+                    finish_reason_code = f"{trigger_label}_observation_accepted"
                 else:
-                    finish_reason_code = "judge_unavailable"
+                    finish_reason_code = f"{trigger_label}_observation_rejected"
+                # acceptance details に trigger を埋める (dashboard / 監査が原因を再構成可能に)
+                acceptance = {**acceptance, "trigger_reason_code": trigger_label}
                 self._append_session_event(
                     self.root,
                     session_id,
@@ -1578,15 +1612,15 @@ class AgentRuntime:
                     current_prompt_preview=None,
                     current_stream_text="",
                     current_plan=None,
-                    current_phase="FINISH" if accepted else "FAILED_DUE_TO_JUDGE_UNAVAILABLE",
+                    current_phase="FINISH" if accepted else f"FAILED_DUE_TO_{trigger_label.upper()}",
                     current_model=selection["model"],
                     current_model_reason=selection["reason"],
                     current_tool="finish" if accepted else None,
                     current_operation_id=None,
                     current_llm_workspace=None,
                     last_llm_workspace=str(turn_workspace),
-                    last_error=None if accepted else "failed due to judge unavailable",
-                    last_system_note=None if accepted else "judge が利用できず、観測フォールバック条件も満たしませんでした。",
+                    last_error=None if accepted else f"failed due to {trigger_label}",
+                    last_system_note=None if accepted else f"連続 finish_blocked ({trigger_label}) と観測フォールバック失敗により終了。",
                     current_started_at=None,
                     current_finished_at=now_iso(),
                     worker_running=self._worker_running(),
@@ -1598,7 +1632,7 @@ class AgentRuntime:
                     "steps": steps,
                     "final_answer": fallback_answer,
                     "acceptance": acceptance,
-                    "error": None if accepted else "failed_due_to_judge_unavailable",
+                    "error": None if accepted else f"failed_due_to_{trigger_label}",
                 }
             controller_finish = self._controller_terminal_finish(
                 selection=selection,
@@ -1763,6 +1797,8 @@ class AgentRuntime:
                 current_tool=None,
                 current_llm_workspace=str(turn_workspace),
                 last_llm_workspace=str(turn_workspace),
+                last_llm_stream_metadata={},
+                last_llm_parse_issue=None,
                 last_error=None,
                 last_system_note=None,
                 current_started_at=now_iso(),
@@ -3016,6 +3052,7 @@ AgentRuntime._deterministic_terminal_final_answer = _deterministic_terminal_fina
 AgentRuntime._synthesize_terminal_final_answer = _synthesize_terminal_final_answer
 AgentRuntime._normalize_run_command_evidence = _normalize_run_command_evidence
 AgentRuntime._output_preview = _output_preview
+AgentRuntime._stdout_result_block = _stdout_result_block
 AgentRuntime._current_phase = _current_phase
 AgentRuntime._deliberation_reasons = _deliberation_reasons
 AgentRuntime._system_prompt = _system_prompt

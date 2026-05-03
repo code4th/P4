@@ -122,12 +122,13 @@ def _system_prompt(self) -> str:
 
 def _output_budget_prompt(self) -> str:
     chunk_bytes = int(getattr(self, "tool_content_chunk_bytes", DEFAULT_TOOL_CONTENT_CHUNK_BYTES) or DEFAULT_TOOL_CONTENT_CHUNK_BYTES)
+    hard_chunk_bytes = chunk_bytes * 2
     return (
         "この応答には生成上限があります。必ず JSON を閉じてください。"
-        f"write_file と append_file の tool_args.content は1ステップあたり最大 {chunk_bytes} UTF-8 bytes です。"
-        "新規ファイルがこの上限内に完全に収まる場合だけ、write_file で全文を書いてください。"
-        f"ファイル内容が {chunk_bytes} bytes を超える場合、この応答では先頭または次に続く1 chunk だけを返し、"
-        "次ステップで append_file を続けてください。source code の chunk は原則として行境界で終えてください。"
+        f"write_file と append_file の tool_args.content は1ステップあたり {chunk_bytes} UTF-8 bytes 以下を推奨します。"
+        f"ただし JSON が完全に閉じ、source code の構文が壊れていない場合は最大 {hard_chunk_bytes} UTF-8 bytes まで runtime が警告付きで採用できます。"
+        f"{hard_chunk_bytes} bytes を超える内容は1回で返さず、先頭または次に続く1 chunkだけを返し、"
+        "次ステップで append_file を続けてください。source code の chunk は原則として行境界、可能なら関数・クラス境界で終えてください。"
         "JSON を閉じられない長さになりそうなら、コード全文や説明を出さず、現在の chunk だけを返してください。"
         "既存ファイルは必ず read_file で対象を確認し、replace_text で一意に一致する old_text と new_text だけを返してください。"
         "既存ファイル全体を write_file で再生成しないでください。"

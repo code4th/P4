@@ -832,6 +832,228 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(len(live_items), 1)
             self.assertEqual(runtime_stream_items, [])
 
+    def test_dashboard_surfaces_finish_rejection_judge_error_details(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            from p4_core.dashboard import build_snapshot, render_dashboard_html
+            from p4_core.workspace import active_session_id, append_canonical_event
+
+            session_id = active_session_id(root)
+            operation_id = "op-judge-error"
+            append_canonical_event(
+                root,
+                session_id,
+                {
+                    "operation_id": operation_id,
+                    "turn_id": "turn-judge-error",
+                    "step_index": 0,
+                    "kind": "operation",
+                    "status": "started",
+                    "payload": {
+                        "title": "Terminal agent",
+                        "detail": "おはよう",
+                        "started_at": "2026-04-29T05:00:00+00:00",
+                    },
+                },
+            )
+            judge_payload = {
+                "decision_type": "grounding_judge",
+                "reason_code": "error",
+                "message": "根拠判定: ERROR。judge 実行中にエラーが発生したため、完了判定に失敗しました。",
+                "details": {
+                    "prompt": "あなたは事実確認のエキスパートです。次の最終回答が証拠に基づいているか判定してください。",
+                    "decision": "error",
+                    "response_model": "fast",
+                    "final_answer": "おはようございます！",
+                    "attempts": [
+                        {
+                            "attempt": 1,
+                            "decision": "error",
+                            "error": "failed to reach Ollama at http://127.0.0.1:11434: HTTP Error 404: Not Found",
+                        }
+                    ],
+                },
+            }
+            append_canonical_event(
+                root,
+                session_id,
+                {
+                    "operation_id": operation_id,
+                    "turn_id": "turn-judge-error",
+                    "step_index": 1,
+                    "kind": "decision",
+                    "status": "blocked",
+                    "payload": judge_payload,
+                },
+            )
+            append_canonical_event(
+                root,
+                session_id,
+                {
+                    "operation_id": operation_id,
+                    "turn_id": "turn-judge-error",
+                    "step_index": 1,
+                    "kind": "decision",
+                    "status": "blocked",
+                    "payload": {
+                        "decision_type": "finish_blocked",
+                        "reason_code": "judge_error",
+                        "message": "完了がブロックされました: 最終回答が事実に基づいていない、または証拠から逸脱しています。",
+                        "details": {"issues": ["judge failed"], "judge": judge_payload["details"]},
+                    },
+                },
+            )
+
+            snapshot = build_snapshot(root)
+            operation = snapshot["recent_operations"][0]
+            finish_cards = [
+                item
+                for task in operation["flow_steps"]
+                for step in task.get("steps", [])
+                for item in step.get("items", [])
+                if item.get("card_type") == "finish"
+            ]
+            self.assertEqual(len(finish_cards), 1)
+            self.assertIn("grounding_judge", finish_cards[0]["details"])
+            html = render_dashboard_html(snapshot)
+            self.assertIn("judge実行エラー", html)
+            self.assertIn("grounding judge details", html)
+            self.assertIn("blocked judge details", html)
+            self.assertIn("judge_error", html)
+            self.assertIn("fast", html)
+            self.assertIn("HTTP Error 404: Not Found", html)
+            self.assertIn("failed to reach Ollama", html)
+            grounding_start = html.index('<div class="flow-k">grounding judge details</div>')
+            decision_start = html.index("P4 completion decision", grounding_start)
+            judge_section = html[grounding_start:decision_start]
+            self.assertLess(judge_section.index("P4 → judge LLM input"), judge_section.index("judge LLM → P4 output"))
+
+    def test_dashboard_model_select_uses_all_ollama_models(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            from p4_core.dashboard import snapshot as snapshot_module
+
+            class FakeOllamaClient:
+                def __init__(self, *, base_url: str) -> None:
+                    self.base_url = base_url
+
+                def list_models(self, *, timeout_seconds: float = 30) -> dict:
+                    return {
+                        "ok": True,
+                        "base_url": self.base_url,
+                        "models": [
+                            {"name": "gemma4:26b"},
+                            {"name": "devstral:latest"},
+                            {"name": "qwen3-coder:latest"},
+                        ],
+                    }
+
+            original_client = snapshot_module.OllamaChatClient
+            snapshot_module.OllamaChatClient = FakeOllamaClient
+            try:
+                snapshot = snapshot_module.build_snapshot(root)
+            finally:
+                snapshot_module.OllamaChatClient = original_client
+
+            self.assertEqual(
+                snapshot["available_models"],
+                ["gemma4:26b", "devstral:latest", "qwen3-coder:latest"],
+            )
+            from p4_core.dashboard import render_dashboard_html
+
+            html = render_dashboard_html(snapshot)
+            self.assertIn('<option value="gemma4:26b" selected>gemma4:26b</option>', html)
+            self.assertIn('<option value="devstral:latest">devstral:latest</option>', html)
+            self.assertIn('<option value="qwen3-coder:latest">qwen3-coder:latest</option>', html)
+
+    def test_dashboard_llm_card_shows_prompt_and_analysis_as_causal_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap_workspace(root, force=True)
+            from p4_core.dashboard import build_snapshot, render_dashboard_html
+            from p4_core.workspace import active_session_id, append_canonical_event, append_prompt_snapshot
+
+            session_id = active_session_id(root)
+            operation_id = "op-llm-causal"
+            turn_id = "turn-llm-causal"
+            append_canonical_event(
+                root,
+                session_id,
+                {
+                    "operation_id": operation_id,
+                    "turn_id": turn_id,
+                    "step_index": 0,
+                    "kind": "operation",
+                    "status": "started",
+                    "payload": {"title": "Terminal agent", "detail": "こんにちわ", "started_at": "2026-04-29T05:00:00+00:00"},
+                },
+            )
+            append_prompt_snapshot(
+                root,
+                session_id,
+                {
+                    "turn_id": turn_id,
+                    "queue_id": "queue-1",
+                    "step_index": 1,
+                    "model": "qwen3.6:latest",
+                    "model_reason": "terminal agent mode via auto",
+                    "prompt": "現在のユーザー依頼:\nこんにちわ\n\n最適と思われる次の一手を決定してください。",
+                },
+            )
+            append_canonical_event(
+                root,
+                session_id,
+                {
+                    "operation_id": operation_id,
+                    "turn_id": turn_id,
+                    "step_index": 1,
+                    "kind": "llm",
+                    "status": "started",
+                    "payload": {
+                        "event_name": "llm_call_started",
+                        "role": "terminal",
+                        "model": "qwen3.6:latest",
+                        "attempt_count": 1,
+                        "transport": "chat_stream",
+                        "schema_required": True,
+                    },
+                },
+            )
+            append_canonical_event(
+                root,
+                session_id,
+                {
+                    "operation_id": operation_id,
+                    "turn_id": turn_id,
+                    "step_index": 1,
+                    "kind": "llm",
+                    "status": "finished",
+                    "payload": {
+                        "event_name": "llm_call_finished",
+                        "role": "terminal",
+                        "model": "qwen3.6:latest",
+                        "content_text": json.dumps(
+                            {
+                                "analysis": "挨拶なのでツール実行は不要で、短く返答すればよい。",
+                                "assistant_message": "こんにちは。",
+                                "tool_name": "final_answer",
+                                "tool_args": {"answer": "こんにちは。"},
+                            },
+                            ensure_ascii=False,
+                        ),
+                        "schema_validation_ok": True,
+                    },
+                },
+            )
+
+            html = render_dashboard_html(build_snapshot(root))
+            self.assertIn("P4 → Agent LLM Input", html)
+            self.assertIn("LLM → P4 Output", html)
+            self.assertIn("現在のユーザー依頼", html)
+            self.assertIn("挨拶なのでツール実行は不要", html)
+            self.assertLess(html.index("P4 → Agent LLM Input"), html.index("LLM → P4 Output"))
 
 class ModelNormalizationTests(unittest.TestCase):
     def test_router_prefers_fast_model_for_short_japanese_prompt(self) -> None:

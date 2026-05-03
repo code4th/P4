@@ -177,14 +177,14 @@ class OllamaChatClient:
         except error.URLError as exc:
             raise RuntimeError(f"failed to reach Ollama at {self.base_url}: {exc}") from exc
 
-    def list_models(self) -> dict[str, Any]:
+    def list_models(self, *, timeout_seconds: float = 30) -> dict[str, Any]:
         req = request.Request(
             f"{self.base_url}/api/tags",
             headers={"Content-Type": "application/json"},
             method="GET",
         )
         try:
-            with request.urlopen(req, timeout=30) as response:
+            with request.urlopen(req, timeout=timeout_seconds) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except error.URLError as exc:
             raise RuntimeError(f"failed to reach Ollama at {self.base_url}: {exc}") from exc

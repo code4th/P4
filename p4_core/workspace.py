@@ -23,14 +23,19 @@ DEFAULT_CONFIG = {
     "ollama_options": {
         "reasoning": {"temperature": 0.2, "num_predict": 1024},
         "fast": {"temperature": 0.1, "num_predict": 384},
-        "coding": {"temperature": 0.1, "num_predict": 2048},
-        "terminal": {"temperature": 0.1, "num_predict": 2048},
+        "coding": {"temperature": 0.1, "num_predict": 4096},
+        "terminal": {"temperature": 0.1, "num_predict": 4096},
     },
     "runtime": {
         "max_steps_per_message": 12,
         "worker_poll_seconds": 2,
         "chat_timeout_seconds": 180,
-        "json_retry_limit": 1,
+        # json_retry_limit: parse_issue (length_truncated, json_parse_error,
+        # schema_validation_failed, invalid_tool_envelope) に対する 1 回の修復試行を有効化。
+        # 0 のままだと LLM が 1 回でも machine-control schema を外すと turn 全体が
+        # 即失敗する (やり切らない設計)。recovery 経路と組合せて bounded best-effort を
+        # 保証する。詳細: handoff/p4-followthrough-recovery-2026-05-03.md
+        "json_retry_limit": 2,
         "thinking_only_repair_limit": 1,
         "execution_root": "",
         "dedicated_llm_workspace": True,
@@ -390,15 +395,17 @@ def _decision_status_from_code(code: str, reason_code: str) -> str:
     if code in accepted_codes:
         return "accepted"
     if code == "judge_fallback_finish":
-        # accepted iff the runtime decided to override and complete the turn;
-        # "judge_unavailable" alone (no observation acceptance) is a failure.
-        if reason_code == "judge_unavailable":
-            return "failed"
-        return "accepted"
+        # accepted iff the runtime decided to override and complete the turn.
+        # reason_code は trigger ("judge_unavailable", "judge_invalid_output",
+        # "judge_error", "finish_acceptance_failed", "grounding_issues") に
+        # "_observation_accepted" / "_observation_rejected" を付与した形を取る。
+        if reason_code.endswith("_observation_accepted"):
+            return "accepted"
+        return "failed"
     if code == "finish_acceptance":
         # reason_code carries the effective acceptance outcome. Accept on
-        # positive verdicts and on the documented observation-based override.
-        if reason_code in {"reviewed", "not_required", "judge_unavailable_observation_accepted"}:
+        # positive verdicts and on any observation-based override variant.
+        if reason_code in {"reviewed", "not_required"} or reason_code.endswith("_observation_accepted"):
             return "accepted"
         return "blocked"
     if reason_code in {"invalid_output", "invalid_json", "empty_output"}:

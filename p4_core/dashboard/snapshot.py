@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from p4_core.frames import FrameManager
+from p4_core.ollama_client import OllamaChatClient
 from p4_core.workspace import WorkspacePaths, active_session_id, read_json, read_jsonl, now_iso
 
 _BENCHMARK_CASE_FALLBACKS: dict[str, dict[str, str]] = {
@@ -28,11 +29,32 @@ def _reasoning_model(root: Path) -> str:
     models = config.get("models", {}) if isinstance(config, dict) else {}
     return str(models.get("reasoning") or "gemma4:26b")
 
-def _available_models(root: Path) -> list[str]:
+def _configured_model_names(root: Path) -> list[str]:
     config = read_json(WorkspacePaths(root).config_path, fallback={})
     configured = config.get("models", {}) if isinstance(config, dict) else {}
     models = [str(value).strip() for value in configured.values() if str(value or "").strip()]
-    return list(dict.fromkeys(models)) or [_reasoning_model(root)]
+    return list(dict.fromkeys(models))
+
+def _ollama_model_names(root: Path, *, timeout_seconds: float = 0.5) -> list[str]:
+    config = read_json(WorkspacePaths(root).config_path, fallback={})
+    base_url = str(config.get("ollama_base_url") or "http://127.0.0.1:11434") if isinstance(config, dict) else "http://127.0.0.1:11434"
+    payload = OllamaChatClient(base_url=base_url).list_models(timeout_seconds=timeout_seconds)
+    models = payload.get("models") if isinstance(payload, dict) else []
+    names = [
+        str(item.get("name") or "").strip()
+        for item in models
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    ]
+    return list(dict.fromkeys(names))
+
+def _available_models(root: Path) -> list[str]:
+    try:
+        observed = _ollama_model_names(root)
+    except Exception:
+        observed = []
+    if observed:
+        return observed
+    return _configured_model_names(root) or [_reasoning_model(root)]
 
 def _duration_ms(started_at: str, finished_at: str) -> int | None:
     try:
@@ -46,6 +68,16 @@ def _parse_timestamp(value: str | None) -> datetime | None:
     if not value: return None
     try: return datetime.fromisoformat(value)
     except ValueError: return None
+
+def _runtime_activity_age_seconds(runtime: dict[str, Any]) -> float:
+    runtime_last_at = _parse_timestamp(str(runtime.get("last_event_at") or ""))
+    now_dt = _parse_timestamp(now_iso())
+    if runtime_last_at is None or now_dt is None:
+        return 9999.0
+    return (now_dt - runtime_last_at).total_seconds()
+
+def _runtime_live_is_fresh(runtime: dict[str, Any]) -> bool:
+    return bool(runtime.get("worker_running", False)) or _runtime_activity_age_seconds(runtime) < 120
 
 def _operation_rows(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ordered_ids: list[str] = []
@@ -106,7 +138,7 @@ def _normalize_operation_rows(runtime: dict[str, Any], operations: list[dict[str
     now = now_iso()
     chrono = list(reversed(operations))
     for i, current in enumerate(chrono):
-        if str(current.get("status") or "") != "running":
+        if str(current.get("status") or "") not in {"started", "running"}:
             continue
         is_active_in_runtime = False
         current_op_id_in_runtime = str(runtime.get("current_operation_id") or "")
@@ -540,18 +572,52 @@ def _coalesce_canonical_flow_items(items: list[dict[str, Any]]) -> list[dict[str
     return coalesced
 
 
-def _canonical_flow_steps_for_operation(operation: dict[str, Any], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+
+def _prompt_snapshot_index(rows: list[dict[str, Any]]) -> dict[tuple[str, int], dict[str, Any]]:
+    index: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in rows:
+        turn_id = str(row.get("turn_id") or "")
+        if not turn_id:
+            continue
+        try:
+            step_index = int(row.get("step_index") or 0)
+        except Exception:
+            continue
+        index[(turn_id, step_index)] = row
+    return index
+
+
+def _canonical_flow_steps_for_operation(
+    operation: dict[str, Any],
+    events: list[dict[str, Any]],
+    prompt_snapshots: dict[tuple[str, int], dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     operation_id = str(operation.get("operation_id") or "")
     grouped: dict[int, dict[str, Any]] = {}
     order: list[int] = []
+    
+    # Pre-process failure translations
+    _FAILURE_TRANSLATIONS = {
+        "missing_work_package_contract": {"title": "計画分解の契約不足", "desc": "LLMが decompose_tasks を提案したが、子タスク化に必要な項目が不足または不正だった"},
+        "json_extraneous_text": {"title": "machine-control JSON形式違反", "desc": "JSONの外側にMarkdownや前置きがある"},
+        "schema_validation_failed": {"title": "schema不一致", "desc": "JSON自体は読めるが、必要項目・enum・型がschemaと合わない"},
+        "contract_incomplete": {"title": "完了条件未達", "desc": "TaskState が CompletionContract を満たしていない"},
+        "judge_invalid_output": {"title": "judge出力形式エラー", "desc": "acceptance judge から verdict/status (ok|ng / success|partial_success|needs_revision) を抽出できなかった"},
+        "json_extraneous_text_recovered": {"title": "✓ recovery: 余計テキスト除去", "desc": "LLM出力に余計テキストが含まれたが、最初の有効ツールエンベロープを採用して前進した (やり切る recovery)"},
+        "judge_error": {"title": "judge実行エラー", "desc": "完了判定用のjudge呼び出し自体が失敗した"},
+        "grounding_judge_error": {"title": "grounding judge実行エラー", "desc": "根拠判定judgeの呼び出しまたは応答取得に失敗した"},
+        "grounding_issues": {"title": "根拠判定NG", "desc": "最終回答が収集済みEvidenceで支えられていない"},
+        "tool_failed": {"title": "ツール実行失敗", "desc": "toolが returncode 非0または ok=false を返した"},
+        "child_task_incomplete": {"title": "子タスク未完了", "desc": "first_action は成功したが success_evidence 未達"},
+    }
+
     for row in events:
         if str(row.get("operation_id") or "") != operation_id:
             continue
         kind = str(row.get("kind") or "")
         if kind == "operation":
             continue
-        if kind in {"llm", "tool"} and str(row.get("status") or "") == "stream":
-            continue
+            
         step_index = int(row.get("step_index") or 0)
         if step_index not in grouped:
             order.append(step_index)
@@ -559,13 +625,221 @@ def _canonical_flow_steps_for_operation(operation: dict[str, Any], events: list[
                 "step_index": step_index,
                 "title": "Input" if step_index == 0 else f"Step {step_index}",
                 "items": [],
+                "raw_events": [],
             }
-        grouped[step_index]["items"].append(_canonical_flow_item(row))
-    rows = [grouped[index] for index in order]
-    for row in rows:
-        row["items"] = _coalesce_canonical_flow_items(list(row.get("items") or []))
-        row["phase"] = _canonical_phase(row)
-    return rows
+            
+        payload = dict(row.get("payload") or {})
+        
+        # Translate failure blocks
+        code = str(payload.get("code") or payload.get("decision_type") or "")
+        reason_code = str(payload.get("reason_code") or "")
+        parse_issue = str(payload.get("details", {}).get("parse_issue") or payload.get("parse_issue") or "")
+        
+        target_code = code
+        if code == "llm_output_issue": target_code = parse_issue
+        if code == "grounding_judge" and reason_code == "error":
+            target_code = "grounding_judge_error"
+        if not target_code: target_code = reason_code
+        
+        if target_code in _FAILURE_TRANSLATIONS:
+            payload["human_title"] = _FAILURE_TRANSLATIONS[target_code]["title"]
+            payload["human_desc"] = _FAILURE_TRANSLATIONS[target_code]["desc"]
+            row["payload"] = payload
+        elif "LLM output did not satisfy machine-control schema" in str(row.get("content") or ""):
+            if "json_extraneous_text" in str(row.get("content") or ""):
+                payload["human_title"] = _FAILURE_TRANSLATIONS["json_extraneous_text"]["title"]
+                payload["human_desc"] = _FAILURE_TRANSLATIONS["json_extraneous_text"]["desc"]
+                row["payload"] = payload
+                
+        grouped[step_index]["raw_events"].append(row)
+
+    rows = []
+    
+    # Sub-task grouping variables
+    child_tasks = []
+    current_child_task = None
+    
+    def _close_child_task():
+        nonlocal current_child_task
+        if current_child_task:
+            child_tasks.append(current_child_task)
+            current_child_task = None
+
+    def _open_child_task(title):
+        nonlocal current_child_task
+        _close_child_task()
+        current_child_task = {
+            "is_child_task": True,
+            "title": title,
+            "steps": [],
+            "status": "running"
+        }
+
+    for index in order:
+        step_group = grouped[index]
+        raw_events = step_group.get("raw_events", [])
+        
+        # Aggregate raw events into consolidated cards
+        cards_map = {}
+        ordered_cards = []
+        
+        for row in raw_events:
+            kind = str(row.get("kind") or "")
+            status = str(row.get("status") or "")
+            payload = dict(row.get("payload") or {})
+            
+            action_id = str(row.get("action_id") or row.get("tool_call_id") or payload.get("tool_call_id") or payload.get("action_id") or "")
+            
+            if kind == "llm":
+                action_id = "llm_card"
+            elif kind == "tool":
+                action_id = action_id or "tool_card"
+            elif kind == "decision" and str(payload.get("decision_type", "")) in ("finish_acceptance", "controller_finish", "grounding_judge", "finish_blocked"):
+                action_id = "finish_card"
+            elif kind == "system_note" and str(payload.get("code", "")) == "finish_blocked":
+                action_id = "finish_card"
+            else:
+                action_id = action_id or f"item_{len(ordered_cards)}"
+                
+            if action_id not in cards_map:
+                ordered_cards.append(action_id)
+                cards_map[action_id] = {
+                    "label": "consolidated_card",
+                    "card_type": action_id, # 'llm_card', 'tool_card', 'finish_card', etc.
+                    "status": "running",
+                    "events": [],
+                }
+                
+            cards_map[action_id]["events"].append(row)
+            
+            # Update status of card based on terminal events
+            if status in {"finished", "failed", "invalid_output", "blocked"}:
+                cards_map[action_id]["status"] = status
+                
+        # Synthesize each card
+        consolidated_items = []
+        for action_id in ordered_cards:
+            card = cards_map[action_id]
+            card_type = card["card_type"]
+            events = card["events"]
+            
+            synth = {
+                "label": "consolidated_card",
+                "card_type": "generic",
+                "status": card["status"],
+                "content": "",
+                "details": {},
+                "raw_events": events,
+                "frame_depth": int(events[0].get("payload", {}).get("frame_depth") or 0) if events else 0
+            }
+            
+            if card_type == "llm_card":
+                synth["card_type"] = "llm"
+                for ev in events:
+                    p = ev.get("payload", {})
+                    if ev.get("status") == "started":
+                        prompt_row = (prompt_snapshots or {}).get((str(ev.get("turn_id") or ""), int(ev.get("step_index") or 0))) or {}
+                        prompt_text = str(prompt_row.get("prompt") or "")
+                        synth["details"]["role"] = p.get("role")
+                        synth["details"]["transport"] = p.get("transport")
+                        synth["details"]["schema_required"] = p.get("schema_required")
+                        synth["details"]["attempt_count"] = p.get("attempt_count")
+                        synth["details"]["prompt"] = prompt_text
+                        synth["details"]["prompt_preview"] = prompt_text[:2000]
+                        synth["details"]["model_reason"] = prompt_row.get("model_reason")
+                    elif ev.get("status") == "stream":
+                        synth["details"]["streaming_text"] = p.get("content_text") or p.get("thinking_text")
+                    elif ev.get("status") == "finished":
+                        synth["details"]["final_text"] = p.get("content_text") or ev.get("content")
+                        synth["details"]["thinking_text"] = p.get("thinking_text")
+                        synth["details"]["model"] = p.get("model")
+                        
+                        import json
+                        try:
+                            parsed = json.loads(synth["details"]["final_text"])
+                            if isinstance(parsed, dict):
+                                synth["details"]["analysis"] = parsed.get("analysis")
+                                synth["details"]["assistant_message"] = parsed.get("assistant_message")
+                                synth["details"]["tool_name"] = parsed.get("tool_name")
+                                synth["details"]["tool_args"] = parsed.get("tool_args")
+                        except Exception:
+                            pass
+            elif "tool" in card_type:
+                synth["card_type"] = "tool"
+                for ev in events:
+                    p = ev.get("payload", {})
+                    if ev.get("kind") == "tool":
+                        synth["details"]["tool_name"] = p.get("tool_name")
+                        if "tool_args" in p: synth["details"]["tool_args"] = p.get("tool_args")
+                        if "tool_result" in p: synth["details"]["tool_result"] = p.get("tool_result")
+                        if ev.get("status") == "finished":
+                            synth["details"]["status"] = "finished"
+            elif card_type == "finish_card":
+                synth["card_type"] = "finish"
+                for ev in events:
+                    p = ev.get("payload", {})
+                    if p.get("decision_type") == "finish_acceptance":
+                        synth["details"]["acceptance"] = p
+                    elif p.get("decision_type") == "controller_finish":
+                        synth["details"]["controller_finish"] = p
+                    elif p.get("decision_type") == "grounding_judge":
+                        synth["details"]["grounding_judge"] = p
+                    elif p.get("decision_type") == "finish_blocked":
+                        synth["details"]["blocked"] = p
+                    elif ev.get("kind") == "system_note" and p.get("code") == "finish_blocked":
+                        synth["details"]["blocked"] = p
+            else:
+                synth["card_type"] = "generic"
+                # fallback to just canonical item
+                synth = _canonical_flow_item(events[0])
+                
+            consolidated_items.append(synth)
+            
+        step_group["items"] = consolidated_items
+        step_group["phase"] = _canonical_phase(step_group)
+        
+        # Sub-task grouping logic based on items
+        has_decompose = any(i.get("details", {}).get("tool_name") == "decompose_tasks" for i in consolidated_items if i.get("card_type") == "tool")
+        has_file_ops = any(i.get("details", {}).get("tool_name") in ("write_file", "append_file", "read_file") for i in consolidated_items if i.get("card_type") == "tool")
+        has_run = any(i.get("details", {}).get("tool_name") == "run_command" for i in consolidated_items if i.get("card_type") == "tool")
+        has_finish = any(i.get("card_type") == "finish" for i in consolidated_items)
+        
+        if not current_child_task:
+            if has_decompose:
+                _open_child_task("計画分解")
+            elif has_file_ops:
+                _open_child_task("ファイル作成・修正")
+            elif has_run:
+                _open_child_task("実行して表示")
+            elif has_finish:
+                _open_child_task("完了判定")
+            else:
+                _open_child_task("処理中")
+                
+        # Adjust grouping if phase shifts
+        if current_child_task["title"] == "計画分解" and not has_decompose and (has_file_ops or has_run):
+            if has_file_ops: _open_child_task("ファイル作成・修正")
+            elif has_run: _open_child_task("実行して表示")
+            
+        if current_child_task["title"] == "ファイル作成・修正" and has_run and not has_file_ops:
+            _open_child_task("実行して表示")
+            
+        if has_finish and current_child_task["title"] != "完了判定":
+            _open_child_task("完了判定")
+            
+        current_child_task["steps"].append(step_group)
+        
+        # Set task status
+        if any(i.get("status") == "blocked" for i in consolidated_items):
+            current_child_task["status"] = "blocked"
+        elif any(i.get("status") == "failed" for i in consolidated_items):
+            current_child_task["status"] = "failed"
+        elif current_child_task["status"] == "running":
+            current_child_task["status"] = "finished" # optimistic finish for now
+
+    _close_child_task()
+    
+    return child_tasks
 
 
 def _canonical_commentator_notes(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -673,22 +947,22 @@ def _read_canonical_snapshot_events(path: Path, *, display_limit: int = 2000, st
 def build_snapshot(root: Path) -> dict[str, Any]:
     paths = WorkspacePaths(root)
     session_id = active_session_id(root)
-    runtime = read_json(paths.runtime_status_path, fallback={})
+    runtime = dict(read_json(paths.runtime_status_path, fallback={}) or {})
+    if str(runtime.get("status") or "").startswith("running") and not _runtime_live_is_fresh(runtime):
+        runtime["status"] = "idle"
+        runtime["current_stream_text"] = ""
+        runtime["worker_running"] = False
     benchmark = read_json(paths.benchmark_status_path, fallback={})
     session = read_json(paths.session_meta_path(session_id), fallback={})
     events = read_jsonl(paths.session_events_path(session_id), limit=1000)
     canonical_events = _read_canonical_snapshot_events(paths.session_canonical_events_path(session_id), display_limit=2000, stream_tail_limit=2000)
+    prompt_snapshots = _prompt_snapshot_index(read_jsonl(paths.session_prompts_path(session_id), limit=500))
     transcript = [row for row in events if row.get("type") in {"user_message", "assistant_message"}][-40:]
     transcript.reverse()
     if canonical_events:
         canonical_display_events = _canonical_display_events(canonical_events)
         operations = _canonical_operation_rows(canonical_display_events)
-        runtime_last_at = _parse_timestamp(str(runtime.get("last_event_at") or ""))
-        now_dt = _parse_timestamp(now_iso())
-        runtime_activity_age = 9999.0
-        if runtime_last_at is not None and now_dt is not None:
-            runtime_activity_age = (now_dt - runtime_last_at).total_seconds()
-        runtime_live_is_fresh = bool(runtime.get("worker_running", False)) or runtime_activity_age < 120
+        runtime_live_is_fresh = _runtime_live_is_fresh(runtime)
         for operation in operations:
             if (
                 str(operation.get("operation_id") or "") == str(runtime.get("current_operation_id") or "")
@@ -696,7 +970,7 @@ def build_snapshot(root: Path) -> dict[str, Any]:
                 and runtime_live_is_fresh
             ):
                 operation["output_preview"] = str(runtime.get("current_stream_text") or "")
-            operation["flow_steps"] = _canonical_flow_steps_for_operation(operation, canonical_display_events)
+            operation["flow_steps"] = _canonical_flow_steps_for_operation(operation, canonical_display_events, prompt_snapshots)
             operation_assistant = next(
                 (
                     row
@@ -712,7 +986,7 @@ def build_snapshot(root: Path) -> dict[str, Any]:
         operations = _normalize_operation_rows(runtime, _operation_rows(events))
         if operations:
             for index, operation in enumerate(operations):
-                if index == 0 and str(operation.get("status") or "") in {"started", "running"}:
+                if index == 0 and str(operation.get("status") or "") in {"started", "running"} and _runtime_live_is_fresh(runtime):
                     operation["output_preview"] = str(runtime.get("current_stream_text") or operation.get("output_preview") or "")
                 trace_preview = _trace_preview_for_operation(operation, events)
                 if trace_preview:
@@ -808,3 +1082,42 @@ def _latest_result_from_legacy(session: dict[str, Any]) -> dict[str, Any]:
     if not body:
         body = str(session.get("last_finish_message") or "")
     return {"summary": summary, "body": body, "source": "legacy"}
+
+
+def _compute_contract_progress(events: list[dict[str, Any]]) -> dict[str, Any]:
+    state = {
+        "contract_state": "unknown",
+        "artifact_written": "no",
+        "command_executed": "no",
+        "stdout_displayed": "no",
+        "result_selected_for_user": "no"
+    }
+    
+    # Defaults based on tool events (optimistic view)
+    for row in events:
+        kind = str(row.get("kind") or "")
+        payload = row.get("payload") or {}
+        if kind == "tool":
+            tname = str(payload.get("tool_name") or "")
+            ok = bool(payload.get("tool_result", {}).get("ok"))
+            if tname in ("write_file", "append_file", "replace_text") and ok:
+                state["artifact_written"] = "yes"
+            if tname == "run_command" and ok:
+                state["command_executed"] = "yes"
+                if str(payload.get("tool_result", {}).get("stdout") or "").strip():
+                    state["stdout_displayed"] = "yes"
+                    
+        # Override with finish_acceptance decision if present
+        if kind == "decision" and payload.get("decision_type") == "finish_acceptance":
+            state["contract_state"] = payload.get("status", "unknown")
+            evidence = payload.get("evidence", {})
+            if "artifact_written" in evidence:
+                state["artifact_written"] = "yes" if evidence["artifact_written"] else "no"
+            if "command_executed" in evidence:
+                state["command_executed"] = "yes" if evidence["command_executed"] else "no"
+            if "stdout_displayed" in evidence:
+                state["stdout_displayed"] = "yes" if evidence["stdout_displayed"] else "no"
+            if state["contract_state"] == "success":
+                state["result_selected_for_user"] = "yes"
+                
+    return state

@@ -71,16 +71,29 @@ TOOL_ACTION_SCHEMA: dict[str, Any] = {
     },
 }
 
+# --- Judge schemas: verdict-first design ---
+#
+# 設計意図:
+#   judge の完了制御の正本は verdict (ok/ng) / status (success/...) のみ。
+#   reason_code, rationale, unsupported_claims, observed_mismatch は説明用 annotation で
+#   あり、決定権を持たない (p4-coding-invariants Invariant 5 — 正本を増やさない)。
+#
+#   旧 schema は annotation を required + enum 拘束していたため、annotation 側の
+#   文字列ミスマッチ (例: LLM が "supported_claim" を返す) が verdict の決定を
+#   逆流的に棄却してしまい、judge の決定の正本性が破られていた。
+#
+#   詳細: handoff/p4-judge-verdict-first-2026-05-03.md
+#
+# 不変条件:
+#   - verdict / status の enum 不一致は **decision の正本違反** であり棄却対象。
+#   - reason_code 等 annotation の表現揺れは **decision を棄却しない**。
 JUDGE_VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "required": ["verdict", "reason_code", "unsupported_claims", "rationale"],
+    "required": ["verdict"],
     "additionalProperties": False,
     "properties": {
         "verdict": {"type": "string", "enum": ["ok", "ng"]},
-        "reason_code": {
-            "type": "string",
-            "enum": ["supported", "unsupported_claim", "insufficient_evidence", "general_knowledge_ok"],
-        },
+        "reason_code": _string_schema(200),
         "unsupported_claims": {
             "type": "array",
             "maxItems": 8,
@@ -92,14 +105,11 @@ JUDGE_VERDICT_SCHEMA: dict[str, Any] = {
 
 FINISH_ACCEPTANCE_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "required": ["status", "reason_code", "rationale", "observed_mismatch"],
+    "required": ["status"],
     "additionalProperties": False,
     "properties": {
         "status": {"type": "string", "enum": ["success", "partial_success", "needs_revision"]},
-        "reason_code": {
-            "type": "string",
-            "enum": ["supported", "obvious_mismatch", "insufficient_semantic_evidence"],
-        },
+        "reason_code": _string_schema(200),
         "rationale": _string_schema(800),
         "observed_mismatch": _string_schema(800),
     },

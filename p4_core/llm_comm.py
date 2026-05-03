@@ -28,6 +28,8 @@ def _chat_with_repair(
     retry_limit = int(self.runtime_config.get("json_retry_limit") or 0)
     thinking_only_repair_limit = int(self.runtime_config.get("thinking_only_repair_limit") if self.runtime_config.get("thinking_only_repair_limit") is not None else 1)
     options = dict(self.ollama_options.get(role, {}))
+    if role in {"coding", "terminal"}:
+        options["num_predict"] = max(int(options.get("num_predict") or 0), 4096)
     options.setdefault("format", TOOL_ACTION_SCHEMA)
     options.setdefault("think", False)
     started_at = time.time()
@@ -47,6 +49,8 @@ def _chat_with_repair(
     while True:
         attempt_count += 1
         stream_metadata = {}
+        supports_stream = callable(getattr(self.llm_backend, "iter_chat_stream", None))
+        transport = "chat_stream" if supports_stream else "chat_nonstream"
         self._append_runtime_event(
             session_id,
             event_name="llm_call_started",
@@ -56,7 +60,7 @@ def _chat_with_repair(
                 "model": model,
                 "attempt_count": attempt_count,
                 "timeout_seconds": timeout_seconds,
-                "transport": "chat_nonstream",
+                "transport": transport,
                 "schema_required": True,
             },
             turn_id=turn_id,
@@ -65,16 +69,71 @@ def _chat_with_repair(
             llm_workspace=llm_workspace,
             phase=current_phase,
         )
-        response = self.llm_backend.chat(
-            model=model,
-            messages=messages,
-            options=options,
-            timeout_seconds=timeout_seconds,
-        )
-        last_content = str(response.get("content_text") if "content_text" in response else response.get("content") or "")
-        last_thinking = str(response.get("thinking_text") or response.get("thinking") or "")
-        last_display = self._format_llm_stream_text(thinking_text=last_thinking, content_text=last_content)
-        stream_metadata = self._extract_stream_metadata(response.get("raw") or {}, previous={})
+        if supports_stream:
+            content_parts: list[str] = []
+            thinking_parts: list[str] = []
+            for chunk in self.llm_backend.iter_chat_stream(
+                model=model,
+                messages=messages,
+                options=options,
+                timeout_seconds=timeout_seconds,
+            ):
+                stream_metadata = self._extract_stream_metadata(chunk, previous=stream_metadata)
+                message = chunk.get("message") if isinstance(chunk, dict) else {}
+                message = message if isinstance(message, dict) else {}
+                delta_content = str(message.get("content") or "")
+                delta_thinking = str(message.get("thinking") or "")
+                if delta_content:
+                    content_parts.append(delta_content)
+                if delta_thinking:
+                    thinking_parts.append(delta_thinking)
+                last_content = "".join(content_parts)
+                last_thinking = "".join(thinking_parts)
+                last_display = self._format_llm_stream_text(thinking_text=last_thinking, content_text=last_content)
+                delta_display = self._format_llm_stream_text(thinking_text=delta_thinking, content_text=delta_content)
+                self._append_runtime_event(
+                    session_id,
+                    event_name="llm_stream_chunk",
+                    content=delta_display,
+                    details={
+                        "role": role,
+                        "model": model,
+                        "attempt_count": attempt_count,
+                        "delta_content": delta_content,
+                        "delta_thinking": delta_thinking,
+                        "content_text": delta_content,
+                        "thinking_text": delta_thinking,
+                        "accumulated_content_chars": len(last_content),
+                        "accumulated_thinking_chars": len(last_thinking),
+                        "stream_metadata": stream_metadata,
+                        "transport": transport,
+                        "schema_required": True,
+                    },
+                    turn_id=turn_id,
+                    queue_id=queue_id,
+                    step_index=step_index,
+                    llm_workspace=llm_workspace,
+                    phase=current_phase,
+                )
+                self._write_runtime_status(
+                    status="running",
+                    current_role=role,
+                    current_model=model,
+                    current_stream_text=self._tail_stream_text(last_display, limit=4000),
+                    last_llm_stream_metadata=stream_metadata,
+                    worker_running=self._worker_running(),
+                )
+        else:
+            response = self.llm_backend.chat(
+                model=model,
+                messages=messages,
+                options=options,
+                timeout_seconds=timeout_seconds,
+            )
+            last_content = str(response.get("content_text") if "content_text" in response else response.get("content") or "")
+            last_thinking = str(response.get("thinking_text") or response.get("thinking") or "")
+            last_display = self._format_llm_stream_text(thinking_text=last_thinking, content_text=last_content)
+            stream_metadata = self._extract_stream_metadata(response.get("raw") or {}, previous={})
         self._append_runtime_event(
             session_id,
             event_name="llm_response_received",
@@ -86,7 +145,7 @@ def _chat_with_repair(
                 "content_text": last_content,
                 "thinking_text": last_thinking,
                 "stream_metadata": stream_metadata,
-                "transport": "chat_nonstream",
+                "transport": transport,
                 "schema_required": True,
             },
             turn_id=turn_id,
@@ -105,6 +164,14 @@ def _chat_with_repair(
         envelope = self._parse_envelope(last_content)
         schema_validation = validate_json_schema(envelope, TOOL_ACTION_SCHEMA)
         raw_output_is_machine_json = self._raw_is_exact_json_object(last_content)
+        # Recovery path (やり切る invariant): envelope が valid envelope + schema 適合なら、
+        # raw に余計テキストがあっても採用する。tool_name と tool_args は
+        # _extract_json_object が決定論的に最長 valid object を選ぶため確定的。
+        # 失敗を全捨てするのではなく、警告付きで前進する (graceful degradation)。
+        envelope_is_recoverable = (
+            self._looks_like_structured_envelope(envelope)
+            and schema_validation.ok
+        )
         if (
             raw_output_is_machine_json
             and self._looks_like_structured_envelope(envelope)
@@ -145,7 +212,7 @@ def _chat_with_repair(
                     "schema_validation": {"ok": True, "errors": []},
                     "raw_output_is_machine_json": True,
                     "schema_validation_ok": True,
-                    "transport": "chat_nonstream",
+                    "transport": transport,
                 },
                 turn_id=turn_id,
                 queue_id=queue_id,
@@ -172,6 +239,95 @@ def _chat_with_repair(
             envelope=fallback,
             stream_metadata=stream_metadata,
         )
+        # やり切る recovery: parse_issue == json_extraneous_text かつ envelope は valid + schema-ok
+        # の場合、警告付きで envelope を採用する。LLM が合法な envelope を出した直後に
+        # 続けて余計な JSON や prose を出すケース (=複数手を一括予測しようとする) を
+        # 1ステップ単位に切り戻して前進する。
+        # 詳細: handoff/p4-followthrough-recovery-2026-05-03.md
+        if (
+            parse_issue == "json_extraneous_text"
+            and envelope_is_recoverable
+        ):
+            finished_at = time.time()
+            finished_iso = now_iso()
+            warning = "extraneous text after structured envelope; using first valid envelope only"
+            self._write_runtime_status(
+                status="running",
+                current_role=role,
+                current_model=model,
+                last_llm_started_at=started_iso,
+                last_llm_finished_at=finished_iso,
+                last_llm_duration_ms=int((finished_at - started_at) * 1000),
+                last_llm_attempt_count=attempt_count,
+                last_llm_raw_preview=last_content[:500],
+                last_llm_thinking_preview=last_thinking[:500],
+                last_llm_parse_issue="json_extraneous_text_recovered",
+                last_llm_schema_validation={"ok": True, "errors": []},
+                raw_output_is_machine_json=False,
+                schema_validation_ok=True,
+                last_llm_stream_metadata=stream_metadata,
+                current_stream_text=self._tail_stream_text(last_display, limit=4000),
+            )
+            self._append_runtime_event(
+                session_id,
+                event_name="llm_call_finished",
+                content=last_display,
+                details={
+                    "role": role,
+                    "model": model,
+                    "attempt_count": attempt_count,
+                    "duration_ms": int((finished_at - started_at) * 1000),
+                    "content_text": last_content,
+                    "thinking_text": last_thinking,
+                    "stream_metadata": stream_metadata,
+                    "parse_issue": "json_extraneous_text_recovered",
+                    "schema_validation": {"ok": True, "errors": []},
+                    "raw_output_is_machine_json": False,
+                    "schema_validation_ok": True,
+                    "transport": transport,
+                    "recovery_warning": warning,
+                },
+                turn_id=turn_id,
+                queue_id=queue_id,
+                step_index=step_index,
+                llm_workspace=llm_workspace,
+                phase=current_phase,
+            )
+            # システムノートとして「envelope を採用、余計テキストは破棄」を可視化
+            if session_id is not None:
+                append_session_event(
+                    self.root,
+                    session_id,
+                    {
+                        "type": "system_note",
+                        "role": "system",
+                        "content": f"LLM出力の余計テキストを除去し、最初の有効なツールエンベロープを採用しました ({envelope.get('tool_name','?')})。",
+                        "code": "llm_output_recovered",
+                        "reason_code": "json_extraneous_text_recovered",
+                        "details": {
+                            "envelope_tool_name": str(envelope.get("tool_name") or ""),
+                            "raw_length": len(last_content),
+                            "warning": warning,
+                        },
+                        "turn_id": turn_id,
+                        "queue_id": queue_id,
+                        "step_index": step_index,
+                        "llm_workspace": llm_workspace,
+                    },
+                )
+            return {
+                "envelope": envelope,
+                "attempt_count": attempt_count,
+                "raw_text": last_content,
+                "thinking_text": last_thinking,
+                "combined_text": last_display,
+                "parse_issue": "",  # 後段の "turn 失敗" 経路に流さない
+                "schema_validation": {"ok": True, "errors": []},
+                "raw_output_is_machine_json": False,
+                "schema_validation_ok": True,
+                "stream_metadata": stream_metadata,
+                "recovery_warning": warning,
+            }
         if parse_issue == "thinking_only_output" and thinking_repairs_used < thinking_only_repair_limit:
             self._append_runtime_event(
                 session_id,
@@ -284,7 +440,7 @@ def _chat_with_repair(
             "schema_validation": {"ok": schema_validation.ok, "errors": list(schema_validation.errors)},
             "raw_output_is_machine_json": raw_output_is_machine_json,
             "schema_validation_ok": bool(schema_validation.ok),
-            "transport": "chat_nonstream",
+            "transport": transport,
         },
         turn_id=turn_id,
         queue_id=queue_id,
@@ -331,6 +487,7 @@ def _tail_stream_text(self, text: str, *, limit: int) -> str:
 def _json_repair_prompt(self, *, parse_target_text: str, stream_metadata: dict[str, Any]) -> str:
     del parse_target_text
     chunk_bytes = int(getattr(self, "tool_content_chunk_bytes", DEFAULT_TOOL_CONTENT_CHUNK_BYTES) or DEFAULT_TOOL_CONTENT_CHUNK_BYTES)
+    hard_chunk_bytes = chunk_bytes * 2
     done_reason = str((stream_metadata or {}).get("done_reason") or "")
     length_note = (
         "The previous response hit the generation length limit. Do not continue the previous text. "
@@ -344,8 +501,9 @@ def _json_repair_prompt(self, *, parse_target_text: str, stream_metadata: dict[s
         "analysis, assistant_message, tool_name, tool_args. Do not put prose, Markdown, "
         "code fences, or hidden reasoning in the visible content. "
         "If you are writing a file, return only one tool call that can complete within this response. "
-        f"write_file and append_file tool_args.content are limited to {chunk_bytes} UTF-8 bytes per step. "
-        "If the file is longer, include only the next line-boundary chunk now and continue with append_file in a later step. "
+        f"write_file and append_file tool_args.content should usually stay within {chunk_bytes} UTF-8 bytes per step. "
+        f"If the JSON can close and the source syntax remains valid, P4 may accept up to {hard_chunk_bytes} UTF-8 bytes with a warning. "
+        f"If the content is more than {hard_chunk_bytes} UTF-8 bytes, do not emit it in one response: include only the next line-boundary chunk now and continue with append_file in a later step. "
         "For existing files, use replace_text with an exact unique old_text copied from read_file output. "
         "Always close the JSON object."
     )

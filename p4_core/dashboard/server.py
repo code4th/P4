@@ -76,6 +76,9 @@ def create_dashboard_server(
                 self.send_header("Connection", "keep-alive")
                 self.end_headers()
                 last_payload = ""
+                # ポーリング間隔を 300ms に短縮し、LLM stream chunk のリアルタイム表示を改善。
+                # 1s ポーリングだと「LLM がトークン出してる感」が体感できず、
+                # ユーザーが固まったと誤認するため。
                 try:
                     while True:
                         current = build_snapshot(self.server.root)
@@ -84,7 +87,7 @@ def create_dashboard_server(
                             last_payload = payload
                             self.wfile.write(f"event: snapshot\ndata: {payload}\n\n".encode("utf-8"))
                             self.wfile.flush()
-                        time.sleep(1.0) # Polling fallback in SSE stream
+                        time.sleep(0.3)
                 except Exception: return
             if self.path in {"/", "/index.html"}:
                 snapshot = build_snapshot(self.server.root)

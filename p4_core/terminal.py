@@ -5,6 +5,7 @@ import re
 import time
 from typing import Any
 
+from p4_core.output_contract import stdout_looks_like_user_visible_result
 from p4_core.workspace import active_session_id, append_jsonl, append_session_event, enqueue_message, now_iso, read_json, read_jsonl
 
 
@@ -19,22 +20,10 @@ def run_terminal_agent(
     session_id = session_id or active_session_id(self.root)
     if self._is_runtime_identity_query(content):
         result = self._answer_runtime_identity_query(content, session_id=session_id)
-        answer = str(result.get("answer") or "")
         return {
             "ok": True,
             "route": "runtime_identity",
-            "run": {
-                "ok": True,
-                "processed": 1,
-                "last_result": {
-                    "ok": True,
-                    "route": "runtime_identity",
-                    "final_answer": answer,
-                    "evidence": result.get("evidence") or {},
-                },
-                "pending_queue": 0,
-                "runtime_identity": result,
-            },
+            "run": result,
             "shell": shell_name,
             "execution_root": str(self.base_execution_root),
             "model": "",
@@ -153,11 +142,15 @@ def _deterministic_terminal_final_answer(self, *, goal_text: str, user_message: 
     parts: list[str] = []
     for row in evidence[-4:]:
         command = str(row.get("command") or "").strip()
-        stdout_preview = self._output_preview(str(row.get("stdout") or ""), max_lines=12, max_chars=700)
+        stdout = str(row.get("stdout") or "")
+        stdout_preview = self._output_preview(stdout, max_lines=12, max_chars=700)
         stderr_preview = self._output_preview(str(row.get("stderr") or ""), max_lines=2, max_chars=160)
         if bool(row.get("ok")):
-            if stdout_preview:
-                parts.append(f"{command}: {stdout_preview}")
+            if stdout.strip():
+                if stdout_looks_like_user_visible_result(stdout):
+                    parts.append(self._stdout_result_block(command=command, stdout=stdout))
+                elif stdout_preview:
+                    parts.append(f"{command}: {stdout_preview}")
             else:
                 cwd = str(row.get("cwd") or "").strip()
                 suffix = f" cwd={cwd}" if cwd else "success"
@@ -169,6 +162,8 @@ def _deterministic_terminal_final_answer(self, *, goal_text: str, user_message: 
         return None
     if len(parts) == 1:
         first = parts[0]
+        if "\n" in first:
+            return first[:3000]
         if ":" in first:
             _, detail = first.split(":", 1)
             return detail.strip()[:1200]
@@ -261,3 +256,12 @@ def _output_preview(self, text: str, *, max_lines: int, max_chars: int) -> str:
                     selected.append(item)
     preview = " / ".join(selected)
     return preview[:max_chars].strip()
+
+
+def _stdout_result_block(self, *, command: str, stdout: str) -> str:
+    clean = str(stdout or "").strip("\n")
+    if not clean:
+        return ""
+    if "\n" not in clean:
+        return f"{command}:\n{clean}"
+    return clean

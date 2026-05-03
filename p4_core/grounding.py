@@ -4,6 +4,7 @@ import json
 import time
 from typing import Any
 
+from p4_core.output_contract import stdout_looks_like_user_visible_result
 from p4_core.schema_validation import validate_json_schema
 from p4_core.runtime_profile import is_runtime_identity_query, runtime_profile_evidence
 from p4_core.schemas import FINISH_ACCEPTANCE_SCHEMA, JUDGE_VERDICT_SCHEMA
@@ -145,7 +146,11 @@ def _finish_acceptance_evidence(steps: list[dict[str, Any]]) -> dict[str, Any]:
         if str(step.get("tool_name") or "") == "run_command"
     ]
     command_executed = any(bool(row.get("ok")) for row in command_results)
-    stdout_displayed = any(str(row.get("stdout") or "").strip() for row in command_results if bool(row.get("ok")))
+    stdout_displayed = any(
+        stdout_looks_like_user_visible_result(str(row.get("stdout") or ""))
+        for row in command_results
+        if bool(row.get("ok"))
+    )
     stderr_only = any(str(row.get("stderr") or "").strip() for row in command_results if bool(row.get("ok"))) and not stdout_displayed
     return {
         "artifact_written": artifact_written,
@@ -197,6 +202,8 @@ def _needs_finish_acceptance_review(*, user_message: str, steps: list[dict[str, 
     observable_result_markers = ["表示", "見せ", "出力", "display", "show", "画面"]
     if not any(marker in text for marker in observable_result_markers):
         return False
+    if not any(str(step.get("tool_name") or "") in {"write_file", "append_file", "replace_text"} for step in steps):
+        return False
     return any(str(step.get("tool_name") or "") == "run_command" for step in steps)
 
 
@@ -232,7 +239,9 @@ def _finish_acceptance_evidence_text(steps: list[dict[str, Any]]) -> str:
 
 
 def _semantic_finish_acceptance_review(self, *, user_message: str, final_answer: str, evidence_text: str) -> dict[str, Any]:
-    model = str(self.router.models.get("fast") or "fast")
+    model = str(self.router.models.get("fast") or "")
+    if not model:
+        raise RuntimeError("router.models['fast'] is not configured; cannot run finish acceptance judge")
     options = {"temperature": 0.1, "num_predict": 160}
     prompt = (
         "あなたは作業完了判定のレビュアーです。プログラムの完全な正当性証明は不要です。\n"
@@ -243,7 +252,9 @@ def _semantic_finish_acceptance_review(self, *, user_message: str, final_answer:
         f"Evidence:\n{evidence_text[:8000]}\n\n"
         f"Final answer:\n{final_answer[:2000]}\n\n"
         "次のJSONだけを返してください。Markdownは禁止です。\n"
-        '{"status":"success|partial_success|needs_revision","reason_code":"supported|obvious_mismatch|insufficient_semantic_evidence","rationale":"短い理由","observed_mismatch":"あれば短く"}'
+        "必須キーは status (success | partial_success | needs_revision のいずれか) のみです。\n"
+        "reason_code, rationale, observed_mismatch は説明用で省略可、自由記述で構いません。\n"
+        '例: {"status":"success","reason_code":"supported","rationale":"短い理由","observed_mismatch":""}'
     )
     trace = _chat_for_judge_with_repair(
         self,
@@ -282,7 +293,9 @@ def _can_accept_general_knowledge_without_judge(*, user_message: str, evidence_t
 
 
 def _semantic_grounding_check(self, *, final_answer: str, evidence_text: str, user_message: str) -> bool:
-    model = str(self.router.models.get("fast") or "fast")
+    model = str(self.router.models.get("fast") or "")
+    if not model:
+        raise RuntimeError("router.models['fast'] is not configured; cannot run grounding judge")
     options = {"temperature": 0.1, "num_predict": 256}
     prompt = (
         "あなたは事実確認のエキスパートです。以下の証拠（Evidence）に基づき、提出された回答（Final Answer）が事実に基づいているか判定してください。\n\n"
@@ -300,7 +313,9 @@ def _semantic_grounding_check(self, *, final_answer: str, evidence_text: str, us
         f"【Evidence】:\n{evidence_text[:8000]}\n\n"
         f"【Final Answer】:\n{final_answer}\n\n"
         "次のJSONだけを返してください。Markdown、説明文、前置きは禁止です。\n"
-        '{"verdict":"ok または ng","reason_code":"supported|unsupported_claim|insufficient_evidence|general_knowledge_ok","unsupported_claims":["証拠にない主張"],"rationale":"短い理由"}'
+        "必須キーは verdict (ok | ng のいずれか) のみです。\n"
+        "reason_code, unsupported_claims, rationale は説明用で省略可、自由記述で構いません。\n"
+        '例: {"verdict":"ok","reason_code":"supported","unsupported_claims":[],"rationale":"短い理由"}'
     )
     self._last_grounding_judge_trace = {
         "model": model,

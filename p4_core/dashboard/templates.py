@@ -140,7 +140,20 @@ _DASHBOARD_TPL = """<!doctype html>
       </div>
     </section>
 
+    
+    <section class="card" id="contractProgressCard">
+      <h2>Contract Progress</h2>
+      <div id="contractProgressBody" style="margin-top:8px; padding:12px; background:#0f1316; border:1px solid #2d3944; border-radius:4px;">
+        <div class="commentator-line"><strong>契約状態</strong> <span>__CONTRACT_STATE__</span></div>
+        <div class="commentator-line"><strong>ファイル作成</strong> <span>__CONTRACT_ARTIFACT__</span></div>
+        <div class="commentator-line"><strong>コマンド実行</strong> <span>__CONTRACT_COMMAND__</span></div>
+        <div class="commentator-line"><strong>標準出力</strong> <span>__CONTRACT_STDOUT__</span></div>
+        <div class="commentator-line"><strong>ユーザ応答</strong> <span>__CONTRACT_RESULT__</span></div>
+      </div>
+    </section>
+
     <section class="card" id="latestResultCard">
+
       <h2>最終結果</h2>
       <div class="subtle" id="latestResultMeta">__LATEST_RESULT_META__</div>
       <pre id="latestResultBody" style="margin-top:8px; padding:12px; background:#0f1316; border:1px solid #2d3944; border-radius:4px; max-height:280px; overflow:auto; white-space:pre-wrap; word-break:break-word;">__LATEST_RESULT__</pre>
@@ -188,6 +201,27 @@ _DASHBOARD_TPL = """<!doctype html>
       return text.length > max ? text.slice(0, max) + `\n... (${text.length - max} chars hidden)` : text;
     }
 
+    function syncModelSelect(models, selectedModel) {
+      const select = document.getElementById("modelSelect");
+      if (!select) return;
+      const names = Array.isArray(models) ? models.filter(Boolean).map(String) : [];
+      const current = select.value || selectedModel || "";
+      const desired = names.includes(current) ? current : (names.includes(selectedModel) ? selectedModel : (names[0] || current));
+      const existing = Array.from(select.options).map((option) => option.value);
+      if (existing.length === names.length && existing.every((value, index) => value === names[index])) {
+        if (desired) select.value = desired;
+        return;
+      }
+      select.innerHTML = "";
+      names.forEach((name) => {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        select.appendChild(option);
+      });
+      if (desired) select.value = desired;
+    }
+
     function shortPath(v) {
       const text = String(v ?? "");
       return text.replace(new RegExp("^/private/tmp/"), "/tmp/");
@@ -228,22 +262,93 @@ _DASHBOARD_TPL = """<!doctype html>
       suspendOperationsRenderUntil = Date.now() + 2000;
     }
 
-    function renderFlowSteps(steps, opId = "") {
-      if (!steps || steps.length === 0) return '<div class="subtle" style="padding:8px;">フローはまだありません。</div>';
-      return steps.map(step => `
-        <section class="flow-step">
-          <div class="flow-step-title">
-            <span>${esc(step.title || 'Step')}</span>
-            <span class="flow-phase">${esc(step.phase || '-')}</span>
-          </div>
-          ${(step.items || []).map((item, itemIndex) => renderFlowItem(item, `${opId}:${step.step_index || 0}:${itemIndex}`)).join('')}
-        </section>
-      `).join('');
+    function renderFlowSteps(childTasks, opId = "") {
+      if (!childTasks || childTasks.length === 0) return '<div class="subtle" style="padding:8px;">フローはまだありません。</div>';
+      
+      function taskSummary(task) {
+        const lines = [];
+        for (const step of task.steps || []) {
+          for (const item of step.items || []) {
+            const d = item.details || {};
+            if (item.card_type === "llm" && d.tool_name) {
+              lines.push(`LLM提案: ${d.tool_name}${d.assistant_message ? ` / ${shortText(d.assistant_message, 120)}` : ""}`);
+            } else if (item.card_type === "finish" && d.acceptance) {
+              lines.push(`完了判定: ${d.acceptance.message || d.acceptance.reason_code || "accepted"}`);
+            } else if (item.label === "decision" && item.content) {
+              lines.push(`最終応答: ${shortText(item.content, 140)}`);
+            } else if (item.label === "observation" && item.content && lines.length === 0) {
+              lines.push(shortText(item.content, 160));
+            }
+          }
+        }
+        return lines.slice(-3).join("\\n") || `${task.status || "unknown"}`;
+      }
+
+      return childTasks.map((task, tIndex) => {
+        const taskNum = tIndex + 1;
+        const icon = task.status === "finished" ? "✓" : (task.status === "blocked" || task.status === "failed" ? "⚠" : "●");
+        const isClosed = task.status === "finished" ? "closed" : "";
+        const taskId = `${opId}:task_${taskNum}`;
+        const summary = taskSummary(task);
+        
+        const stepsHtml = (task.steps || []).map(step => `
+          <section class="flow-step">
+            <div class="flow-step-title">
+              <span>Step ${step.step_index || 0}</span>
+              <span class="flow-phase">${esc(step.phase || '-')}</span>
+            </div>
+            ${(step.items || []).map((item, itemIndex) => renderFlowItem(item, `${opId}:${step.step_index || 0}:${itemIndex}`)).join('')}
+          </section>
+        `).join('');
+
+        return `
+        <div class="nested-block">
+            <button class="nested-toggle" type="button" onclick="toggleNested('${taskId}')">
+                ${icon} 子タスク ${taskNum}: ${esc(task.title || '')}
+            </button>
+            <pre class="subtle" style="padding:0 8px 8px 8px; white-space:pre-wrap;">${esc(summary)}</pre>
+            <div class="nested-content ${openNestedIds.has(taskId) ? '' : isClosed}" data-nested-id="${taskId}">
+                <div class="operation-output">
+                    ${stepsHtml}
+                </div>
+            </div>
+        </div>`;
+      }).join('');
     }
 
     function withFlowScrollId(content, scrollId) {
       if (!scrollId) return content;
       return content.replace('<div class="flow-content"', `<div class="flow-content" data-flow-scroll-id="${esc(scrollId)}"`);
+    }
+
+    function renderJudgeDetails(payload, title) {
+      if (!payload) return "";
+      const d = payload.details || payload;
+      const attempts = Array.isArray(d.attempts) ? d.attempts : [];
+      const summary = [];
+      if (d.prompt) summary.push(`<div class="flow-k">P4 → judge LLM input</div><details><summary style="cursor:pointer; color:#9ec5ff;">judge prompt</summary><pre>${esc(d.prompt)}</pre></details>`);
+      if (d.final_answer) summary.push(`<div class="flow-k">judge input final_answer</div><pre>${esc(d.final_answer)}</pre>`);
+      if (d.evidence_text) summary.push(`<div class="flow-k">judge input evidence</div><pre>${esc(d.evidence_text)}</pre>`);
+      summary.push(`<div class="flow-k">judge LLM → P4 output</div>`);
+      if (payload.reason_code) summary.push(`<div class="flow-k">reason_code</div><pre>${esc(payload.reason_code)}</pre>`);
+      if (payload.message) summary.push(`<div class="flow-k">message</div><pre>${esc(payload.message)}</pre>`);
+      if (d.decision) summary.push(`<div class="flow-k">judge decision</div><pre>${esc(d.decision)}</pre>`);
+      if (d.response_model || d.model) summary.push(`<div class="flow-k">judge model</div><pre>${esc(d.response_model || d.model)}</pre>`);
+      if (d.verdict) summary.push(`<div class="flow-k">verdict</div><pre>${esc(d.verdict)}</pre>`);
+      if (d.rationale) summary.push(`<div class="flow-k">rationale</div><pre>${esc(d.rationale)}</pre>`);
+      if (attempts.length) {
+        const lines = attempts.map((a) => {
+          const suffix = a.error ? `: ${a.error}` : (a.decision ? `: ${a.decision}` : "");
+          return `attempt ${a.attempt || "-"}${suffix}`;
+        }).join("\\n");
+        summary.push(`<div class="flow-k">judge attempts</div><pre class="stderr">${esc(lines)}</pre>`);
+      }
+      const raw = JSON.stringify(payload, null, 2);
+      return `<div class="judge-detail">
+        <div class="flow-k">${esc(title)}</div>
+        ${summary.join("")}
+        <details style="margin-top:8px;"><summary style="cursor:pointer; color:#9ec5ff;">judge raw details</summary><pre>${esc(raw)}</pre></details>
+      </div>`;
     }
 
     function renderFlowItem(item, scrollId = "") {
@@ -258,6 +363,78 @@ _DASHBOARD_TPL = """<!doctype html>
       // Highlight blocked states
       const isBlocked = (item.label === 'system_note' && content.includes('ブロックされました')) || (item.label === 'decision' && item.status === 'blocked');
       const extraClass = isBlocked ? 'blocked' : '';
+
+      if (item.label === 'consolidated_card') {
+        const d = item.details || {};
+        const parts = [];
+        let extraCls = '';
+        let lbl = '';
+        
+        if (item.card_type === 'llm') {
+            parts.push(`<section class="nested-block" style="margin:0 0 10px 0;"><button class="nested-toggle" type="button">P4 → Agent LLM Input</button><div style="padding:8px;">`);
+            parts.push(`<div class="flow-k">request</div><pre>machine-control action request${d.role ? ` / role: ${esc(d.role)}` : ''}${d.transport ? ` / transport: ${esc(d.transport)}` : ''}${d.schema_required !== undefined ? ` / schema_required: ${esc(d.schema_required)}` : ''}${d.attempt_count ? ` / attempt: ${esc(d.attempt_count)}` : ''}</pre>`);
+            if (d.model) parts.push(`<div class="flow-k">model</div><pre>${esc(d.model)}</pre>`);
+            if (d.model_reason) parts.push(`<div class="flow-k">model reason</div><pre>${esc(d.model_reason)}</pre>`);
+            if (d.prompt_preview) parts.push(`<div class="flow-k">prompt preview</div><pre>${esc(d.prompt_preview)}</pre>`);
+            if (d.prompt) parts.push(`<details style="margin-top:8px;"><summary style="cursor:pointer; color:#9ec5ff;">full prompt</summary><pre>${esc(d.prompt)}</pre></details>`);
+            parts.push(`</div></section>`);
+            parts.push(`<section class="nested-block" style="margin:0;"><button class="nested-toggle" type="button">LLM → P4 Output</button><div style="padding:8px;">`);
+            if (d.analysis) parts.push(`<div class="flow-k">analysis</div><pre>${esc(d.analysis)}</pre>`);
+            if (d.assistant_message) parts.push(`<div class="flow-k">assistant_message</div><pre>${esc(d.assistant_message)}</pre>`);
+            if (d.tool_name) parts.push(`<div class="flow-k">proposed action</div><div><span class="tool-pill">${esc(d.tool_name)}</span></div>`);
+            if (d.tool_args) parts.push(`<div class="flow-k">tool_args</div><pre>${esc(JSON.stringify(d.tool_args, null, 2))}</pre>`);
+            
+            parts.push(`<details style="margin-top:8px;"><summary style="cursor:pointer; color:#9ec5ff;">詳細・JSON表示</summary>`);
+            if (d.thinking_text) parts.push(`<div class="flow-k" style="margin-top:8px;">thinking</div><pre>${esc(d.thinking_text)}</pre>`);
+            if (d.final_text) parts.push(`<div class="flow-k" style="margin-top:8px;">raw json</div><pre>${esc(d.final_text)}</pre>`);
+            parts.push(`</details>`);
+            parts.push(`</div></section>`);
+            
+            lbl = "Agent LLM output";
+            extraCls = "llm";
+        } else if (item.card_type === 'tool') {
+            if (d.tool_name) parts.push(`<div class="flow-k">tool</div><pre>${esc(d.tool_name)}</pre>`);
+            if (d.tool_args) parts.push(`<div class="flow-k">args</div><pre>${esc(JSON.stringify(d.tool_args, null, 2))}</pre>`);
+            if (d.tool_result) {
+                if (d.tool_name === 'run_command') {
+                    // re-use existing command render
+                    item.parsed_payload = d.tool_result;
+                    parts.push(renderFlowItem({...item, label:'tool_result'}, scrollId).replace(/<div class="flow-item.*?>|<\\/div>$/g, ''));
+                } else {
+                    parts.push(`<div class="flow-k">result</div><pre>${esc(JSON.stringify(d.tool_result, null, 2))}</pre>`);
+                }
+            }
+            lbl = "Tool (consolidated)";
+            extraCls = "tool";
+        } else if (item.card_type === 'finish') {
+            const blockedJudge = d.blocked && d.blocked.details && d.blocked.details.judge ? d.blocked.details.judge : null;
+            if (d.grounding_judge) {
+                parts.push(renderJudgeDetails(d.grounding_judge, "grounding judge details"));
+            } else if (blockedJudge) {
+                parts.push(renderJudgeDetails(blockedJudge, "blocked judge details"));
+            }
+            if (d.blocked) {
+                const b = d.blocked;
+                parts.push(`<div class="flow-k">P4 completion decision</div>`);
+                parts.push(`<div style="color:#ffd08a; margin-bottom:8px;">⚠ <strong>${esc(b.human_title || b.code)}</strong><br/>${esc(b.human_desc || '')}</div>`);
+                if (b.reason_code) parts.push(`<div class="flow-k">blocked reason_code</div><pre>${esc(b.reason_code)}</pre>`);
+                parts.push(`<pre>${esc(b.content || '')}</pre>`);
+            }
+            if (d.acceptance) parts.push(`<div class="flow-k">acceptance</div><pre>${esc(JSON.stringify(d.acceptance, null, 2))}</pre>`);
+            if (d.controller_finish) parts.push(`<div class="flow-k">controller_finish</div><pre>${esc(JSON.stringify(d.controller_finish, null, 2))}</pre>`);
+            lbl = "P4 completion check";
+            extraCls = "decision";
+        } else {
+            parts.push(`<pre>${esc(item.content || '')}</pre>`);
+            lbl = "Generic";
+        }
+        
+        return `<div class="flow-item ${extraCls}" style="margin-left:${indent}px">
+            <div class="flow-label">${depthBadge}${depthMeta}<span>${lbl}</span></div>
+            ${withFlowScrollId('<div class="flow-content">' + parts.join('') + '</div>', scrollId)}
+        </div>`;
+      }
+
 
       if (item.label === 'tool_result' && item.tool_name === 'run_command' && item.parsed_payload) {
         const p = item.parsed_payload;
@@ -275,6 +452,8 @@ _DASHBOARD_TPL = """<!doctype html>
         content = renderCommentatorContent(item.content || "");
       } else if (item.label === 'system_note' && item.code === 'llm_output_issue' && item.details) {
         content = renderLlmOutputIssue(item);
+      } else if (item.label === 'system_note' && item.code === 'llm_output_recovered' && item.details) {
+        content = renderLlmOutputRecovered(item);
       } else if (item.label === 'task_plan') {
         content = renderTaskPlan(item);
       } else if (item.label === 'runtime_event') {
@@ -291,7 +470,9 @@ _DASHBOARD_TPL = """<!doctype html>
         content = `<div class="flow-content"><pre>${esc(item.content || "")}</pre></div>`;
       }
       content = withFlowScrollId(content, scrollId);
-      const itemClass = item.code === 'llm_output_issue' ? 'llm_output_issue' : esc(item.label);
+      const itemClass = item.code === 'llm_output_issue' ? 'llm_output_issue'
+        : item.code === 'llm_output_recovered' ? 'llm_output_recovered'
+        : esc(item.label);
       return `<div class="flow-item ${itemClass} ${extraClass}" style="margin-left:${indent}px">
         <div class="flow-label">${depthBadge}${depthMeta}<span>${label}${isBlocked ? ' (BLOCKED)' : ''}</span></div>
         ${content}
@@ -359,6 +540,22 @@ findings: ${esc(shortText(findings || "-", 320))}</pre></div>`;
         ${raw ? `<div class="flow-k">content</div><pre>${esc(raw)}</pre>` : ''}
         ${(!thinking && !raw && combined) ? `<div class="flow-k">combined</div><pre>${esc(combined)}</pre>` : ''}
         ${meta ? `<div class="flow-k">stream metadata</div><pre>${esc(meta)}</pre>` : ''}
+      </div>`;
+    }
+
+    function renderLlmOutputRecovered(item) {
+      const d = item.details || {};
+      return `<div class="flow-content" style="border-left:3px solid #2d8f6f; background:#0d1a16; padding:10px;">
+        <div style="color:#7fdfaa; font-weight:bold; margin-bottom:6px;">✓ recovery: 余計テキスト除去</div>
+        <pre>${esc(item.content || "")}</pre>
+        ${d.envelope_tool_name ? `<div class="flow-k">採用したツール</div><pre>${esc(d.envelope_tool_name)}</pre>` : ''}
+        ${d.raw_length ? `<div class="flow-k">元出力サイズ</div><pre>${esc(d.raw_length)} chars</pre>` : ''}
+        ${d.warning ? `<div class="flow-k">警告</div><pre>${esc(d.warning)}</pre>` : ''}
+        <details style="margin-top:8px;"><summary style="cursor:pointer; color:#9ec5ff;">この recovery が必要な理由</summary>
+          <pre>P4 は machine-control schema として「1ターン1 envelope」を要求します。LLM がそれに違反した場合、旧設計はターン全体を失敗扱いにしていました。
+やり切る invariant の下では、最初の有効な envelope を採用してユーザー request の達成を継続します。
+LLM が複数手を一括予測しようとしたとき、最初の手だけ採用して 1 ステップずつ進めます。</pre>
+        </details>
       </div>`;
     }
 
@@ -633,6 +830,7 @@ findings: ${esc(shortText(findings || "-", 320))}</pre></div>`;
 
       document.getElementById("statusPill").textContent = `状態: ${rt.status || "idle"}`;
       document.getElementById("modelPill").textContent = `モデル: ${rt.current_model || snapshot.model}`;
+      syncModelSelect(snapshot.available_models || [], rt.current_model || snapshot.model);
       const parseIssue = rt.last_llm_parse_issue ? ` / 失敗分類: ${rt.last_llm_parse_issue}` : "";
       const doneReason = rt.last_llm_stream_metadata && rt.last_llm_stream_metadata.done_reason ? ` / done: ${rt.last_llm_stream_metadata.done_reason}` : "";
       document.getElementById("lastLlmPill").textContent = `直近LLM: ${rt.last_llm_duration_ms || "-"}ms${parseIssue}${doneReason}`;
@@ -737,23 +935,68 @@ def _phase_for_flow_step(step: dict[str, Any]) -> str:
         return "SYNTHESIZE_FROM_EVIDENCE"
     return "DISCOVER_REQUIRED_COMMANDS"
 
-def _render_flow_steps_html(steps: list[dict[str, Any]]) -> str:
-    if not steps:
-        return "<div class=\"flow-empty\">まだ finish までの flow はありません。</div>"
-    parts: list[str] = []
-    for step in steps:
-        step_index = int(step.get("step_index") or 0)
-        items_html = "".join(
-            _render_flow_item_html(item, scroll_id=f"initial:{step_index}:{item_index}")
-            for item_index, item in enumerate(step.get("items") or [])
-        )
-        parts.append(
-            "<section class=\"flow-step\">"
-            f"<div class=\"flow-step-title\">{html.escape(str(step.get('title') or 'Step'))}"
-            f"<span class=\"flow-phase\">{html.escape(str(step.get('phase') or '-'))}</span></div>"
-            f"{items_html}"
-            "</section>"
-        )
+def _render_flow_steps_html(child_tasks: list[dict[str, Any]], op_id: str = "") -> str:
+    if not child_tasks:
+        return "<div class=\"flow-empty\">まだ flow はありません。</div>"
+
+    def _task_summary(task: dict[str, Any]) -> str:
+        lines: list[str] = []
+        for step in task.get("steps") or []:
+            for item in step.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                details = item.get("details") if isinstance(item.get("details"), dict) else {}
+                if item.get("card_type") == "llm" and details.get("tool_name"):
+                    msg = _short_text(str(details.get("assistant_message") or ""), 120)
+                    lines.append(f"LLM提案: {details.get('tool_name')}" + (f" / {msg}" if msg else ""))
+                elif item.get("card_type") == "finish" and details.get("acceptance"):
+                    acceptance = details.get("acceptance") if isinstance(details.get("acceptance"), dict) else {}
+                    lines.append(f"完了判定: {acceptance.get('message') or acceptance.get('reason_code') or 'accepted'}")
+                elif item.get("label") == "decision" and item.get("content"):
+                    lines.append(f"最終応答: {_short_text(str(item.get('content') or ''), 140)}")
+                elif item.get("label") == "observation" and item.get("content") and not lines:
+                    lines.append(_short_text(str(item.get("content") or ""), 160))
+        return "\n".join(lines[-3:]) or str(task.get("status") or "unknown")
+    
+    parts = []
+    for task_index, task in enumerate(child_tasks, start=1):
+        status = str(task.get("status") or "")
+        icon = "✓" if status == "finished" else "⚠" if status in ("blocked", "failed") else "●"
+        is_closed = "closed" if status == "finished" else ""
+        summary = _task_summary(task)
+        
+        task_id = f"{op_id}:task_{task_index}"
+        
+        parts.append(f'''
+        <div class="nested-block">
+            <button class="nested-toggle" onclick="toggleNested('{task_id}')">
+                {icon} 子タスク {task_index}: {html.escape(task.get('title') or '')}
+            </button>
+            <pre class="subtle" style="padding:0 8px 8px 8px; white-space:pre-wrap;">{html.escape(summary)}</pre>
+            <div class="nested-content {is_closed}" data-nested-id="{task_id}">
+                <div class="operation-output">
+        ''')
+        
+        for step in task.get("steps") or []:
+            step_index = int(step.get("step_index") or 0)
+            items_html = "".join(
+                _render_flow_item_html(item, scroll_id=f"initial:{step_index}:{item_index}")
+                for item_index, item in enumerate(step.get("items") or [])
+            )
+            parts.append(
+                f"<section class=\"flow-step\">"
+                f"<div class=\"flow-step-title\">Step {step_index}"
+                f"<span class=\"flow-phase\">{html.escape(str(step.get('phase') or '-'))}</span></div>"
+                f"{items_html}"
+                "</section>"
+            )
+            
+        parts.append('''
+                </div>
+            </div>
+        </div>
+        ''')
+        
     return "".join(parts)
 
 def _flow_content_scroll_attr(scroll_id: str) -> str:
@@ -763,6 +1006,60 @@ def _attach_flow_scroll_id(content: str, scroll_id: str) -> str:
     if not scroll_id:
         return content
     return content.replace("<div class=\"flow-content\"", f"<div class=\"flow-content\"{_flow_content_scroll_attr(scroll_id)}", 1)
+
+def _render_judge_details_html(payload: dict[str, Any], title: str) -> str:
+    details = payload.get("details") if isinstance(payload.get("details"), dict) else payload
+    attempts = details.get("attempts") if isinstance(details.get("attempts"), list) else []
+    parts: list[str] = [f"<div class=\"flow-k\">{html.escape(title)}</div>"]
+    prompt = str(details.get("prompt") or "")
+    if prompt:
+        parts.append(
+            "<div class=\"flow-k\">P4 → judge LLM input</div>"
+            "<details><summary style=\"cursor:pointer; color:#9ec5ff;\">judge prompt</summary>"
+            f"<pre>{html.escape(prompt)}</pre></details>"
+        )
+    final_answer = str(details.get("final_answer") or "")
+    if final_answer:
+        parts.append(f"<div class=\"flow-k\">judge input final_answer</div><pre>{html.escape(final_answer)}</pre>")
+    evidence_text = str(details.get("evidence_text") or "")
+    if evidence_text:
+        parts.append(f"<div class=\"flow-k\">judge input evidence</div><pre>{html.escape(evidence_text)}</pre>")
+    parts.append("<div class=\"flow-k\">judge LLM → P4 output</div>")
+    reason_code = str(payload.get("reason_code") or "")
+    if reason_code:
+        parts.append(f"<div class=\"flow-k\">reason_code</div><pre>{html.escape(reason_code)}</pre>")
+    message = str(payload.get("message") or "")
+    if message:
+        parts.append(f"<div class=\"flow-k\">message</div><pre>{html.escape(message)}</pre>")
+    decision = str(details.get("decision") or "")
+    if decision:
+        parts.append(f"<div class=\"flow-k\">judge decision</div><pre>{html.escape(decision)}</pre>")
+    model = str(details.get("response_model") or details.get("model") or "")
+    if model:
+        parts.append(f"<div class=\"flow-k\">judge model</div><pre>{html.escape(model)}</pre>")
+    verdict = str(details.get("verdict") or "")
+    if verdict:
+        parts.append(f"<div class=\"flow-k\">verdict</div><pre>{html.escape(verdict)}</pre>")
+    rationale = str(details.get("rationale") or "")
+    if rationale:
+        parts.append(f"<div class=\"flow-k\">rationale</div><pre>{html.escape(rationale)}</pre>")
+    if attempts:
+        lines: list[str] = []
+        for attempt in attempts:
+            if not isinstance(attempt, dict):
+                continue
+            suffix = str(attempt.get("error") or attempt.get("decision") or "")
+            attempt_no = str(attempt.get("attempt") or "-")
+            lines.append(f"attempt {attempt_no}: {suffix}" if suffix else f"attempt {attempt_no}")
+        if lines:
+            parts.append(f"<div class=\"flow-k\">judge attempts</div><pre class=\"stderr\">{html.escape(chr(10).join(lines))}</pre>")
+    raw = json.dumps(payload, ensure_ascii=False, indent=2)
+    parts.append(
+        "<details style=\"margin-top:8px;\">"
+        "<summary style=\"cursor:pointer; color:#9ec5ff;\">judge raw details</summary>"
+        f"<pre>{html.escape(raw)}</pre></details>"
+    )
+    return f"<div class=\"judge-detail\">{''.join(parts)}</div>"
 
 def _render_flow_item_html(item: dict[str, Any], *, scroll_id: str = "") -> str:
     label_map = {
@@ -803,6 +1100,105 @@ def _render_flow_item_html(item: dict[str, Any], *, scroll_id: str = "") -> str:
     if is_blocked:
         extra_class = " blocked"
         label = f"{label} (BLOCKED)"
+
+    if str(item.get("label") or "") == "consolidated_card":
+        card_type = str(item.get("card_type") or "")
+        details = item.get("details", {})
+        parts = []
+        
+        if card_type == "llm":
+            role = str(details.get("role") or "")
+            transport = str(details.get("transport") or "")
+            schema_required = details.get("schema_required")
+            request_bits = ["machine-control action request"]
+            if role:
+                request_bits.append(f"role: {role}")
+            if transport:
+                request_bits.append(f"transport: {transport}")
+            if schema_required is not None:
+                request_bits.append(f"schema_required: {schema_required}")
+            if details.get("attempt_count"):
+                request_bits.append(f"attempt: {details.get('attempt_count')}")
+            parts.append("<section class=\"nested-block\" style=\"margin:0 0 10px 0;\"><button class=\"nested-toggle\" type=\"button\">P4 → Agent LLM Input</button><div style=\"padding:8px;\">")
+            parts.append(f"<div class=\"flow-k\">request</div><pre>{html.escape(' / '.join(request_bits))}</pre>")
+            if details.get("model"):
+                parts.append(f"<div class=\"flow-k\">model</div><pre>{html.escape(str(details.get('model') or ''))}</pre>")
+            if details.get("model_reason"):
+                parts.append(f"<div class=\"flow-k\">model reason</div><pre>{html.escape(str(details.get('model_reason') or ''))}</pre>")
+            if details.get("prompt_preview"):
+                parts.append(f"<div class=\"flow-k\">prompt preview</div><pre>{html.escape(str(details.get('prompt_preview') or ''))}</pre>")
+            if details.get("prompt"):
+                parts.append("<details style=\"margin-top:8px;\"><summary style=\"cursor:pointer; color:#9ec5ff;\">full prompt</summary>")
+                parts.append(f"<pre>{html.escape(str(details.get('prompt') or ''))}</pre></details>")
+            parts.append("</div></section>")
+            parts.append("<section class=\"nested-block\" style=\"margin:0;\"><button class=\"nested-toggle\" type=\"button\">LLM → P4 Output</button><div style=\"padding:8px;\">")
+            if details.get("analysis"):
+                parts.append(f"<div class=\"flow-k\">analysis</div><pre>{html.escape(str(details.get('analysis') or ''))}</pre>")
+            if "assistant_message" in details:
+                parts.append(f"<div class=\"flow-k\">assistant_message</div><pre>{html.escape(str(details.get('assistant_message') or ''))}</pre>")
+            if "tool_name" in details:
+                parts.append(f"<div class=\"flow-k\">proposed action</div><div><span class=\"tool-pill\">{html.escape(str(details.get('tool_name')))}</span></div>")
+            if "tool_args" in details:
+                parts.append(f"<div class=\"flow-k\">tool_args</div><pre>{html.escape(json.dumps(details.get('tool_args'), ensure_ascii=False, indent=2))}</pre>")
+            
+            parts.append(f"<details style=\"margin-top:8px;\"><summary style=\"cursor:pointer; color:#9ec5ff;\">詳細・JSON表示</summary>")
+            if "thinking_text" in details:
+                parts.append(f"<div class=\"flow-k\" style=\"margin-top:8px;\">thinking</div><pre>{html.escape(str(details.get('thinking_text') or ''))}</pre>")
+            if "final_text" in details:
+                parts.append(f"<div class=\"flow-k\" style=\"margin-top:8px;\">raw json</div><pre>{html.escape(str(details.get('final_text') or ''))}</pre>")
+            parts.append("</details>")
+            parts.append("</div></section>")
+            content = "".join(parts)
+            label = "Agent LLM output"
+            extra_class = " llm"
+            
+        elif card_type == "tool":
+            parts.append(f"<div class=\"flow-k\">tool</div><pre>{html.escape(str(details.get('tool_name') or ''))}</pre>")
+            if "tool_args" in details:
+                parts.append(f"<div class=\"flow-k\">args</div><pre>{html.escape(json.dumps(details.get('tool_args'), ensure_ascii=False, indent=2))}</pre>")
+            if "tool_result" in details:
+                if details.get("tool_name") == "run_command":
+                    parts.append(_render_command_result_html(details.get("tool_result")))
+                else:
+                    parts.append(f"<div class=\"flow-k\">result</div><pre>{html.escape(json.dumps(details.get('tool_result'), ensure_ascii=False, indent=2))}</pre>")
+            content = "".join(parts)
+            label = "Tool (consolidated)"
+            extra_class = " tool"
+            
+        elif card_type == "finish":
+            blocked = details.get("blocked") if isinstance(details.get("blocked"), dict) else {}
+            blocked_details = blocked.get("details") if isinstance(blocked.get("details"), dict) else {}
+            blocked_judge = blocked_details.get("judge") if isinstance(blocked_details.get("judge"), dict) else {}
+            if "grounding_judge" in details and isinstance(details.get("grounding_judge"), dict):
+                parts.append(_render_judge_details_html(details["grounding_judge"], "grounding judge details"))
+            elif blocked_judge:
+                parts.append(_render_judge_details_html(blocked_judge, "blocked judge details"))
+            if blocked:
+                b = blocked
+                parts.append("<div class=\"flow-k\">P4 completion decision</div>")
+                parts.append(f"<div>⚠ {html.escape(str(b.get('human_title') or b.get('code') or ''))}</div>")
+                parts.append(f"<div>{html.escape(str(b.get('human_desc') or ''))}</div>")
+                if b.get("reason_code"):
+                    parts.append(f"<div class=\"flow-k\">blocked reason_code</div><pre>{html.escape(str(b.get('reason_code') or ''))}</pre>")
+                parts.append(f"<pre>{html.escape(str(b.get('content') or ''))}</pre>")
+            if "acceptance" in details:
+                parts.append(f"<div class=\"flow-k\">acceptance</div><pre>{html.escape(json.dumps(details['acceptance'], ensure_ascii=False, indent=2))}</pre>")
+            if "controller_finish" in details:
+                parts.append(f"<div class=\"flow-k\">controller_finish</div><pre>{html.escape(json.dumps(details['controller_finish'], ensure_ascii=False, indent=2))}</pre>")
+            content = "".join(parts)
+            label = "P4 completion check"
+            extra_class = " decision"
+        else:
+            content = f"<pre>{html.escape(str(item.get('content') or ''))}</pre>"
+            label = "Generic"
+            extra_class = ""
+            
+        return (
+            f"<div class=\"flow-item{extra_class}\" style=\"margin-left:{indent}px\">"
+            f"<div class=\"flow-label\">{depth_badge}{depth_meta}<span>{label}</span></div>"
+            f"{_attach_flow_scroll_id('<div class=\"flow-content\">' + content + '</div>', scroll_id)}"
+            "</div>"
+        )
 
     if str(item.get("label") or "") == "tool_result":
         payload = item.get("parsed_payload")
@@ -1154,6 +1550,8 @@ def _latest_result_text(snapshot: dict[str, Any]) -> str:
     if isinstance(latest, dict):
         body = str(latest.get("body") or "")
         if body:
+            if "LLM output did not satisfy machine-control schema: json_extraneous_text" in body:
+                return "⚠ machine-control JSON形式違反\nJSONの外側にMarkdownや前置きがあります。\n\n[詳細]\n" + body
             return body
         summary = str(latest.get("summary") or "")
         if summary:
@@ -1209,7 +1607,7 @@ def render_dashboard_html(snapshot: dict[str, Any]) -> str:
         started_at = str(op.get("started_at") or "")
         output_preview = str(op.get("output_preview") or "")
         blocked_reason = str(op.get("blocked_reason") or "")
-        flow_html = _render_flow_steps_html(op.get("flow_steps") or [])
+        flow_html = _render_flow_steps_html(op.get("flow_steps") or [], op_id=op_id)
         blocked_html = (
             f"<div class=\"blocked-reason\"><strong>ブロック理由</strong><pre>{esc(blocked_reason)}</pre></div>"
             if blocked_reason
@@ -1241,7 +1639,8 @@ def render_dashboard_html(snapshot: dict[str, Any]) -> str:
 
     operation_rows = "".join(_op_row(op, index) for index, op in enumerate(operations)) or "<div>まだ実行操作はありません。</div>"
 
-    model_options = "".join(f"<option value=\"{esc(m)}\"{' selected' if m == runtime.get('current_model', model) else ''}>{esc(m)}</option>" for m in available_models)
+    selected_model = str(runtime.get("current_model") or model)
+    model_options = "".join(f"<option value=\"{esc(m)}\"{' selected' if m == selected_model else ''}>{esc(m)}</option>" for m in available_models)
 
     res = _DASHBOARD_TPL.replace("__STATUS__", esc(str(runtime.get("status") or "idle")))
     res = res.replace("__MODEL__", esc(str(runtime.get("current_model") or model)))
@@ -1270,5 +1669,12 @@ def render_dashboard_html(snapshot: dict[str, Any]) -> str:
         esc(f"直近: {latest_summary}" if latest_summary else "直近結果はありません。"),
     )
     res = res.replace("__LATEST_RESULT__", esc(_short_text(_latest_result_text(snapshot), 4000)))
+    
+    res = res.replace("__CONTRACT_STATE__", esc(str(snapshot.get("contract_progress", {}).get("contract_state", "unknown"))))
+    res = res.replace("__CONTRACT_ARTIFACT__", esc(str(snapshot.get("contract_progress", {}).get("artifact_written", "no"))))
+    res = res.replace("__CONTRACT_COMMAND__", esc(str(snapshot.get("contract_progress", {}).get("command_executed", "no"))))
+    res = res.replace("__CONTRACT_STDOUT__", esc(str(snapshot.get("contract_progress", {}).get("stdout_displayed", "no"))))
+    res = res.replace("__CONTRACT_RESULT__", esc(str(snapshot.get("contract_progress", {}).get("result_selected_for_user", "no"))))
     res = res.replace("__SNAPSHOT_JSON__", "null")
+
     return res

@@ -4,13 +4,17 @@ P4 Core is a minimal local-LLM agent runtime for purpose execution.
 
 ## Current mainline
 
-- Mainline version: `0.3.0-mainline`
-- Mainline date: `2026-04-21`
-- Canonical handoff: `handoff/p4-design-spec-2026-04-21.md`
-- Code root for P4 inheritance: `p4-core/`
+- Mainline version: `0.4.1-mainline` (refinements after 0.4.0; see canonical handoff)
+- Mainline date: `2026-04-26` (last refined: `2026-05-03`)
+- Canonical handoff (entry point): [handoff/p4-canonical-mainline-2026-04-26.md](handoff/p4-canonical-mainline-2026-04-26.md)
+- Coding invariants (must read before changing P4): [handoff/p4-coding-invariants-2026-04-24.md](handoff/p4-coding-invariants-2026-04-24.md)
+- Latest design notes (refinements after 0.4.0):
+  - [handoff/p4-judge-verdict-first-2026-05-03.md](handoff/p4-judge-verdict-first-2026-05-03.md) — judge schema verdict-first redesign
+  - [handoff/p4-followthrough-recovery-2026-05-03.md](handoff/p4-followthrough-recovery-2026-05-03.md) — やり切る invariant + LLM output recovery
+- Code root for P4 inheritance: `./`
 - Verification command: `python3 -m unittest discover -s tests`
 
-This is the current P4 baseline. Older P4 notes and live workspaces are useful history, but P4 should inherit from this code root and the canonical handoff above.
+This is the current P4 baseline. Older planning documents (requirements, design spec, task list, audits) are in `handoff/archive/p4/` for history.
 
 It is intentionally smaller than P1/P2:
 
@@ -33,7 +37,7 @@ It is intentionally smaller than P1/P2:
 ## Quick start
 
 ```bash
-cd /Users/satojunichi/Documents/openclaw/p4-core
+cd /path/to/P4
 python3 -m unittest discover -s tests
 python3 -m p4_core.cli --root /tmp/p4-demo version
 python3 -m p4_core.cli --root /tmp/p4-demo bootstrap --force
@@ -61,7 +65,11 @@ P4 records the agent loop as append-only JSONL events. Important event types:
 - `frame_returned`
 - `child_return`
 
-Terminal agent turns use a text JSON action contract. If the LLM returns prose, truncated JSON, thinking-only output, or an invalid envelope instead of a valid `tool_name` / `tool_args` object, P4 records `system_note.code = llm_output_issue`. Parse failures are classified as `empty_output`, `thinking_only_output`, `missing_json_object`, `json_parse_error`, `length_truncated`, `invalid_tool_envelope`, or `json_contract_not_confirmed`. The latest class and stream metadata are also shown in runtime status and the dashboard. In Ollama chat responses, P4 parses assistant `content` only; `thinking` is retained as diagnostic evidence but is not treated as tool-call JSON.
+Terminal agent turns use a text JSON action contract. If the LLM returns prose, truncated JSON, thinking-only output, or an invalid envelope instead of a valid `tool_name` / `tool_args` object, P4 records `system_note.code = llm_output_issue`. Parse failures are classified as `empty_output`, `thinking_only_output`, `missing_json_object`, `json_parse_error`, `length_truncated`, `invalid_tool_envelope`, `json_extraneous_text`, `schema_validation_failed`, or `json_contract_not_confirmed`. The latest class and stream metadata are also shown in runtime status and the dashboard. In Ollama chat responses, P4 parses assistant `content` only; `thinking` is retained as diagnostic evidence but is not treated as tool-call JSON.
+
+**Follow-through recovery (やり切る invariant)** — see [`handoff/p4-followthrough-recovery-2026-05-03.md`](handoff/p4-followthrough-recovery-2026-05-03.md). When the LLM output contains a valid envelope (schema-conformant) but with extraneous text trailing it, P4 does not throw away the whole turn. It records `system_note.code = llm_output_recovered` with `reason_code: json_extraneous_text_recovered`, adopts the first valid envelope (deterministically chosen by `_extract_json_object` as the longest valid object), and proceeds. `last_llm_parse_issue` ends in `_recovered` so the recovery is identifiable, and `raw_output_is_machine_json: false` keeps the strict-purity flag honest. Default `json_retry_limit` is `2`, providing two repair attempts before falling through to recovery.
+
+**Judge verdict-first invariant** — see [`handoff/p4-judge-verdict-first-2026-05-03.md`](handoff/p4-judge-verdict-first-2026-05-03.md). `JUDGE_VERDICT_SCHEMA` and `FINISH_ACCEPTANCE_SCHEMA` require only the decision field (`verdict` / `status`); annotation fields (`reason_code`, `rationale`, etc.) are optional and free-text. This prevents annotation drift (e.g. LLM returning `reason_code: "supported_claim"` when the prompt example used `"supported"`) from rejecting an otherwise-valid `verdict: "ok"`.
 
 Default Ollama output budgets are intentionally bounded but large enough for JSON tool calls: `terminal` and `coding` use `num_predict=2048`, while `reasoning` uses `1024` and `fast` stays at `384`. A `done_reason` of `length` means the model hit this budget before completing the required JSON envelope.
 
